@@ -3,7 +3,7 @@ LDFLAGS = -lpthread
 
 all: me
 me: me.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)	
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
 clean:
 	$(RM) me
