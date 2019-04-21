@@ -1,4 +1,4 @@
-CFLAGS = -Wall -std=c99
+CFLAGS = -Wall -std=gnu99
 LDFLAGS = -lpthread
 
 all: me
