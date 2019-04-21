@@ -781,11 +781,10 @@ void draw_statusbar(editor_buf *eb)
                        ? col_size = ec.row[ec.cursor_y].size
                        : 0;
     int r_len = snprintf(
-        r_status, sizeof(r_status), "%d:%d:%d  %d/%d lines  %d/%d cols ",
-        currtime->tm_hour, currtime->tm_min, currtime->tm_sec,
+        r_status, sizeof(r_status), "%d/%d lines  %d/%d cols [ %2d:%2d:%2d ]",
         (ec.cursor_y + 1 > ec.num_rows) ? ec.num_rows : ec.cursor_y + 1,
         ec.num_rows, (ec.cursor_x + 1 > col_size) ? col_size : ec.cursor_x + 1,
-        col_size);
+        col_size, currtime->tm_hour, currtime->tm_min, currtime->tm_sec);
     if (len > ec.screen_cols)
         len = ec.screen_cols;
     buf_append(eb, status, len);
@@ -1102,7 +1101,7 @@ int main(int argc, char *argv[])
     set_status_message(
         "Mazu Editor | ^Q Exit | ^S Save | ^F Search | "
         "^C Copy | ^X Cut | ^V Paste");
-    if (pthread_create(&(pthread_t) {0}, NULL, &refresh_thread, NULL)) {
+    if (pthread_create(&(pthread_t){0}, NULL, &refresh_thread, NULL)) {
         perror("pthread_create");
         return 1;
     }
