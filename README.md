@@ -15,8 +15,11 @@ Keys:
 * Ctrl-C: Copy line
 * Ctrl-X: Cut line
 * Ctrl-V: Paste line
+* PageUp, PageDown: Scroll up/down
+* Up/Down/Left/Right: Move cursor
+* Home/End: move cursor to the beginnging/end of editing line
 
-Mazu Editor does not depend on any library (not even curses). It uses fairly
+Mazu Editor does not depend on external library (not even curses). It uses fairly
 standard VT100 (and similar terminals) escape sequences.
 
 ## Acknowledge
