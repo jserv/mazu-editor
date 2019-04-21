@@ -775,7 +775,7 @@ void draw_statusbar(editor_buf *eb)
     char status[80], r_status[80];
     currtime = localtime(&now);
     int len = snprintf(status, sizeof(status), "  File: %.20s %s",
-                       ec.file_name ? ec.file_name : "New file",
+                       ec.file_name ? ec.file_name : "< New >",
                        ec.modified ? "(modified)" : "");
     int col_size = ec.row &&ec.cursor_y <= ec.num_rows - 1
                        ? col_size = ec.row[ec.cursor_y].size
