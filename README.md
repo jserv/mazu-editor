@@ -4,10 +4,10 @@ Mazu Editor is a minimalist text editor with syntax highlight, copy/paste, and s
 
 ## Usage
 
-Command line:
+Command line: (`filename` is optional)
 * me `<filename>`
 
-Keys:
+Supported keys:
 * Ctrl-S: Save
 * Ctrl-Q: Quit
 * Ctrl-F: Find string in file
