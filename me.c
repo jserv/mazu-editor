@@ -34,7 +34,7 @@ typedef struct {
     char **file_match;
     char **keywords;
     char *sl_comment_start;                  /* single line */
-    char *ml_commnet_start, *ml_commnet_end; /* multiple lines */
+    char *ml_comment_start, *ml_comment_end; /* multiple lines */
     int flags;
 } editor_syntax;
 
@@ -257,8 +257,8 @@ void highlight(editor_row *row)
         return;
     char **keywords = ec.syntax->keywords;
     char *scs = ec.syntax->sl_comment_start;
-    char *mcs = ec.syntax->ml_commnet_start;
-    char *mce = ec.syntax->ml_commnet_end;
+    char *mcs = ec.syntax->ml_comment_start;
+    char *mce = ec.syntax->ml_comment_end;
     int scs_len = scs ? strlen(scs) : 0;
     int mcs_len = mcs ? strlen(mcs) : 0;
     int mce_len = mce ? strlen(mce) : 0;
