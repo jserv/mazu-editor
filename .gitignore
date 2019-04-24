@@ -1,1 +1,4 @@
 me
+
+# Snap packaging specific rules
+/*.snap

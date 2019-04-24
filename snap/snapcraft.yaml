@@ -1,0 +1,121 @@
+%YAML 1.1
+---
+# app specific top-level metadata
+name: mazu-editor
+title: Mazu Editor
+summary: A minimalist text editor with syntax highlight, copy/paste, and search
+description: |
+    **Usage**
+
+    Command line: (_filename_ is optional)
+
+        me _filename_
+
+    Supported keys:
+
+    * Ctrl-S: Save
+    * Ctrl-Q: Quit
+    * Ctrl-F: Find string in file
+        - ESC to cancel search, Enter to exit search, arrows to navigate
+    * Ctrl-C: Copy line
+    * Ctrl-X: Cut line
+    * Ctrl-V: Paste line
+    * PageUp, PageDown: Scroll up/down
+    * Up/Down/Left/Right: Move cursor
+    * Home/End: move cursor to the beginnging/end of editing line
+
+    Mazu Editor does not depend on external library (not even curses). It uses fairly
+    standard VT100 (and similar terminals) escape sequences.
+
+    **Acknowledge**
+
+    Mazu Editor was inspired by excellent tutorial Build Your Own Text Editor:
+
+    https://viewsourcecode.org/snaptoken/kilo
+
+    **Snap-specific information**
+
+    Due to the confined nature of the snap apps, by default this snap can only access
+    the files under your home directory(excluding the dotfiles right under it).
+
+    To open and save files under the `/mnt` and the `/media` directories, connect the
+     snap to the `removable-media` interface by running the following command in a
+     terminal:
+
+        sudo snap connect mazu-editor:removable-media
+
+license: BSD-2-Clause
+
+# snap specific top-level metadata
+adopt-info: mazu-editor
+assumes:
+- command-chain
+base: core
+confinement: strict
+grade: stable
+
+# snap are composed of parts
+# a part may require another part to be staged before building
+parts:
+    mazu-editor:
+        source: https://github.com/jserv/mazu-editor.git
+
+        override-pull: |
+            set -o nounset
+
+            snapcraftctl pull
+            snapcraftctl set-version "$(
+                git describe \
+                    --always \
+                    --dirty \
+                    --tags
+            )"
+
+        # Unusable due to lacking install target
+        #plugin: make
+        plugin: nil
+
+        build-packages:
+        # build dependencies
+        - gcc
+        - make
+
+        # for determining snap version
+        - git
+
+        override-build: |
+            set -o nounset
+
+            make
+            install \
+                --directory \
+                "${SNAPCRAFT_PART_INSTALL}"/bin
+            install \
+                me \
+                "${SNAPCRAFT_PART_INSTALL}"/bin
+
+    # Launcher scripts for runtime fixes and snap maintenance
+    launchers:
+        source: snap/local/launchers
+        plugin: dump
+        organize:
+            '*': bin/
+
+# apps and services to be exposed to the host system
+apps:
+    mazu-editor:
+        adapter: full
+        command: bin/me
+        command-chain:
+        - bin/mazu-editor-launch
+        environment:
+            # Ubuntu Core only ships this locale, so hardcoding it
+            LANG: C.UTF-8
+            LC_ALL: C.UTF-8
+
+# additional access can be given by Snapd security confinement interfaces
+# mostly provided by the "slots" exposed by the `core` snap, enumerate
+# "plugs" here to connect them
+plugs:
+    home:
+    removable-media:
