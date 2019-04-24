@@ -22,6 +22,12 @@ Supported keys:
 Mazu Editor does not depend on external library (not even curses). It uses fairly
 standard VT100 (and similar terminals) escape sequences.
 
+## Coding Style
+
+Use clang-format tool(Google coding style) to let code review easier.
+
+    clang-format --style=google -i me.c
+
 ## Acknowledge
 
 Mazu Editor was inspired by excellent tutorial [Build Your Own Text Editor](https://viewsourcecode.org/snaptoken/kilo/).
