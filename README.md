@@ -17,7 +17,7 @@ Supported keys:
 * Ctrl-V: Paste line
 * PageUp, PageDown: Scroll up/down
 * Up/Down/Left/Right: Move cursor
-* Home/End: move cursor to the beginnging/end of editing line
+* Home/End: move cursor to the beginning/end of editing line
 
 Mazu Editor does not depend on external library (not even curses). It uses fairly
 standard VT100 (and similar terminals) escape sequences.
