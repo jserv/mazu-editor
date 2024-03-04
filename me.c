@@ -86,16 +86,17 @@ enum editor_highlight {
 
 char *C_extensions[] = {".c", ".cc", ".cxx", ".cpp", ".h", NULL};
 
-char *C_keywords[] = {"switch",    "if",       "while",   "for",     "break",
-                      "continue",  "return",   "else",    "struct",  "union",
-                      "typedef",   "static",   "enum",    "class",   "case",
-                      "volatile",  "register", "sizeof",  "typedef", "union",
-                      "goto",      "const",    "auto",    "#if",     "#endif",
-                      "#error",    "#ifdef",   "#ifndef", "#elif",   "#define",
-                      "#undef",    "#include",
+char *C_keywords[] = {
+    "switch",  "if",       "while",   "for",      "break",    "continue",
+    "return",  "else",     "struct",  "union",    "typedef",  "static",
+    "enum",    "class",    "case",    "volatile", "register", "sizeof",
+    "typedef", "union",    "goto",    "const",    "auto",     "#if",
+    "#endif",  "#error",   "#ifdef",  "#ifndef",  "#elif",    "#define",
+    "#undef",  "#include",
 
-                      "int|",      "long|",    "double|", "float|",  "char|",
-                      "unsigned|", "signed|",  "void|",   "bool|",   NULL};
+    "int|",    "long|",    "double|", "float|",   "char|",    "unsigned|",
+    "signed|", "void|",    "bool|",   NULL,
+};
 
 editor_syntax DB[] = {
     {"c", C_extensions, C_keywords, "//", "/*", "*/",
