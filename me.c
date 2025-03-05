@@ -1020,6 +1020,9 @@ void process_key()
     case CTRL_('v'):
         paste();
         break;
+    case CTRL_('z'):
+        raise(SIGSTOP);
+        break;
     case ARROW_UP:
     case ARROW_DOWN:
     case ARROW_LEFT:
