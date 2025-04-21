@@ -660,8 +660,8 @@ void save_file()
             close(fd);
             free(buf);
             ec.modified = 0;
-            if (len > 1000)
-                set_status_message("%d KB written to disk", len / 1000);
+            if (len >= 1024)
+                set_status_message("%d KiB written to disk", len >> 10);
             else
                 set_status_message("%d B written to disk", len);
             return;
