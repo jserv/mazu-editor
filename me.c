@@ -46,7 +46,7 @@ struct {
     editor_row *row;
     int modified;
     char *file_name;
-    char status_msg[80];
+    char status_msg[90];
     time_t status_msg_time;
     char *copied_char_buffer;
     editor_syntax *syntax;
@@ -1104,7 +1104,7 @@ int main(int argc, char *argv[])
     enable_raw_mode();
     set_status_message(
         "Mazu Editor | ^Q Exit | ^S Save | ^F Search | "
-        "^C Copy | ^X Cut | ^V Paste");
+        "^C Copy | ^X Cut | ^V Paste | ^Z Suspend");
     if (pthread_create(&(pthread_t){0}, NULL, &refresh_thread, NULL)) {
         perror("pthread_create");
         return 1;
