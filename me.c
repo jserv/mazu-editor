@@ -508,8 +508,14 @@ void row_append(editor_row *row, char *s, size_t len)
 
 void copy(int cut)
 {
-    ec.copied_char_buffer =
+    char *new_buf =
         realloc(ec.copied_char_buffer, strlen(ec.row[ec.cursor_y].chars) + 1);
+    if (!new_buf) {
+        free(ec.copied_char_buffer);
+        ec.copied_char_buffer = NULL;
+        return;
+    }
+    ec.copied_char_buffer = new_buf;
     strcpy(ec.copied_char_buffer, ec.row[ec.cursor_y].chars);
     set_status_message(cut ? "Text cut" : "Text copied");
 }
@@ -626,8 +632,11 @@ void open_file(char *file_name)
     ec.file_name = strdup(file_name);
     select_highlight();
     FILE *file = fopen(file_name, "r+");
-    if (!file)
+    if (!file) {
+        free(ec.file_name);
+        ec.file_name = NULL;
         panic("Failed to open the file");
+    }
     char *line = NULL;
     size_t line_cap = 0;
     ssize_t line_len;
@@ -940,7 +949,12 @@ char *prompt(char *msg, void (*callback)(char *, int))
         } else if (!iscntrl(c) && isprint(c)) {
             if (buf_len == buf_size - 1) {
                 buf_size *= 2;
-                buf = realloc(buf, buf_size);
+                char *new_buf = realloc(buf, buf_size);
+                if (!new_buf) {
+                    free(buf);
+                    return NULL;
+                }
+                buf = new_buf;
             }
             buf[buf_len++] = c;
             buf[buf_len] = '\0';
@@ -1005,6 +1019,7 @@ void process_key()
         clear_screen();
         close_buffer();
         exit(0);
+        /* not reachable */
         break;
     case CTRL_('s'):
         save_file();
