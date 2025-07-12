@@ -940,7 +940,13 @@ char *prompt(char *msg, void (*callback)(char *, int))
         } else if (!iscntrl(c) && isprint(c)) {
             if (buf_len == buf_size - 1) {
                 buf_size *= 2;
-                buf = realloc(buf, buf_size);
+                char *new_buf = realloc(buf, buf_size);  // In case realloc
+                                                         // fails
+                if (NULL == new_buf) {
+                    free(buf);
+                    return NULL;
+                }
+                buf = new_buf;
             }
             buf[buf_len++] = c;
             buf[buf_len] = '\0';
