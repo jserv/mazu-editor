@@ -24,15 +24,19 @@
 // Get the byte length of a UTF-8 character from its first byte
 static inline int utf8_byte_length(uint8_t c)
 {
+    /* Quick check for ASCII */
     if ((c & 0x80) == 0)
-        return 1;  // 0xxxxxxx - ASCII
-    if ((c & 0xE0) == 0xC0)
-        return 2;  // 110xxxxx - 2 bytes
-    if ((c & 0xF0) == 0xE0)
-        return 3;  // 1110xxxx - 3 bytes
-    if ((c & 0xF8) == 0xF0)
-        return 4;  // 11110xxx - 4 bytes
-    return 1;      // Invalid UTF-8, treat as single byte
+        return 1;
+
+    /* Use proper validation for multibyte sequences */
+    if ((c & 0xE0) == 0xC0 && c >= 0xC2) /* Valid 2-byte start */
+        return 2;
+    if ((c & 0xF0) == 0xE0) /* 3-byte start */
+        return 3;
+    if ((c & 0xF8) == 0xF0 && c <= 0xF4) /* Valid 4-byte start */
+        return 4;
+
+    return 1; /* Invalid UTF-8 start byte, treat as single byte */
 }
 
 // Check if byte is a UTF-8 continuation byte (10xxxxxx)
@@ -41,30 +45,22 @@ static inline int is_utf8_continuation(uint8_t c)
     return (c & 0xC0) == 0x80;
 }
 
+static int utf8_to_codepoint(const char *s, size_t max_len);
+
 // Get display width of a UTF-8 character (handles wide characters)
 // Returns 2 for CJK characters, 1 for most others, 0 for combining marks
 static inline int utf8_char_width(const char *s)
 {
-    uint8_t c = (uint8_t) *s;
+    /* Use the enhanced UTF-8 to codepoint conversion */
+    int codepoint = utf8_to_codepoint(s, 4);
 
-    // ASCII
-    if (c < 0x80)
+    /* Handle invalid UTF-8 */
+    if (codepoint < 0)
         return 1;
 
-    // Get the Unicode codepoint
-    int codepoint = 0;
-    int len = utf8_byte_length(c);
-
-    if (len == 1) {
-        codepoint = c;
-    } else if (len == 2) {
-        codepoint = ((c & 0x1F) << 6) | (s[1] & 0x3F);
-    } else if (len == 3) {
-        codepoint = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
-    } else if (len == 4) {
-        codepoint = ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) |
-                    ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
-    }
+    /* ASCII control characters */
+    if (codepoint < 0x20 || codepoint == 0x7F)
+        return 0;
 
     // CJK Unified Ideographs and common fullwidth ranges
     if ((codepoint >= 0x4E00 &&
@@ -113,6 +109,95 @@ static inline const char *utf8_prev_char(const char *start, const char *s)
 /* Forward declaration needed early for debugging */
 static void set_status_message(const char *msg, ...);
 
+/* Validate UTF-8 byte sequence and return its length
+ * Returns 0 if invalid, otherwise returns number of bytes (1-4)
+ */
+static int utf8_validate(const char *s, size_t max_len)
+{
+    if (!s || max_len == 0)
+        return 0;
+
+    unsigned char c = (unsigned char) *s;
+
+    /* ASCII character (0xxxxxxx) */
+    if (c <= 0x7F)
+        return 1;
+
+    /* Invalid UTF-8 start byte */
+    if (c < 0xC0 || c > 0xF7)
+        return 0;
+
+    /* 2-byte sequence (110xxxxx 10xxxxxx) */
+    if (c <= 0xDF) {
+        if (max_len < 2)
+            return 0;
+        if ((s[1] & 0xC0) != 0x80)
+            return 0;
+        /* Check for overlong encoding */
+        if (c < 0xC2)
+            return 0;
+        return 2;
+    }
+
+    /* 3-byte sequence (1110xxxx 10xxxxxx 10xxxxxx) */
+    if (c <= 0xEF) {
+        if (max_len < 3)
+            return 0;
+        if ((s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80)
+            return 0;
+        /* Check for overlong encoding and surrogates */
+        if (c == 0xE0 && (unsigned char) s[1] < 0xA0)
+            return 0;
+        if (c == 0xED && (unsigned char) s[1] > 0x9F)
+            return 0;
+        return 3;
+    }
+
+    /* 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx) */
+    if (c <= 0xF4) {
+        if (max_len < 4)
+            return 0;
+        if ((s[1] & 0xC0) != 0x80 || (s[2] & 0xC0) != 0x80 ||
+            (s[3] & 0xC0) != 0x80)
+            return 0;
+        /* Check for overlong encoding and valid range */
+        if (c == 0xF0 && (unsigned char) s[1] < 0x90)
+            return 0;
+        if (c == 0xF4 && (unsigned char) s[1] > 0x8F)
+            return 0;
+        return 4;
+    }
+
+    return 0;
+}
+
+/* Convert UTF-8 sequence to Unicode codepoint
+ * Returns the codepoint value, or -1 if invalid
+ */
+static int utf8_to_codepoint(const char *s, size_t max_len)
+{
+    int len = utf8_validate(s, max_len);
+    if (len == 0)
+        return -1;
+
+    unsigned char c = (unsigned char) *s;
+
+    if (len == 1)
+        return c;
+
+    if (len == 2)
+        return ((c & 0x1F) << 6) | (s[1] & 0x3F);
+
+    if (len == 3)
+        return ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+
+    if (len == 4)
+        return ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) |
+               ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+
+    return -1;
+}
+
 /* A gap buffer maintains a gap (empty space) at the cursor position,
  * making insertions and deletions at that position O(1) operations.
  * Memory layout: [text before gap][    GAP    ][text after gap]
@@ -150,7 +235,6 @@ static gap_buffer_t *gb_init(size_t initial_size)
     return gb;
 }
 
-
 /* Get total text length (excluding gap) */
 static size_t gb_length(gap_buffer_t *gb)
 {
@@ -162,11 +246,9 @@ static char *gb_ptr(gap_buffer_t *gb, size_t pos)
 {
     size_t front_size = gb->gap - gb->buffer;
 
-    if (pos <= front_size) {
+    if (pos <= front_size)
         return gb->buffer + pos;
-    } else {
-        return gb->egap + (pos - front_size);
-    }
+    return gb->egap + (pos - front_size);
 }
 
 /* Move gap to position */
