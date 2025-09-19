@@ -272,13 +272,12 @@ static void gb_move_gap(gap_buffer_t *gb, size_t pos)
 }
 
 /* Grow the gap to ensure minimum size */
-static int gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
+static bool gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
 {
     size_t gap_size = gb->egap - gb->gap;
 
-    if (gap_size >= min_gap) {
-        return 1; /* Already large enough */
-    }
+    if (gap_size >= min_gap)
+        return true; /* Already large enough */
 
     /* Calculate new size */
     size_t text_size = gb_length(gb);
@@ -291,7 +290,7 @@ static int gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
     /* Reallocate buffer */
     char *new_buffer = realloc(gb->buffer, new_size);
     if (!new_buffer)
-        return 0; /* Allocation failed */
+        return false; /* Allocation failed */
 
     /* Update pointers */
     gb->buffer = new_buffer;
@@ -304,26 +303,28 @@ static int gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
         memmove(gb->egap, gb->gap + gap_size, after_gap_size);
 
     gb->size = new_size;
-    return 1;
+    return true;
 }
 
 /* Insert text at position */
-static int gb_insert(gap_buffer_t *gb, size_t pos, const char *text, size_t len)
+static bool gb_insert(gap_buffer_t *gb,
+                      size_t pos,
+                      const char *text,
+                      size_t len)
 {
     /* Move gap to insertion point */
     gb_move_gap(gb, pos);
 
     /* Ensure gap is large enough */
-    if (!gb_grow_gap(gb, len)) {
-        return 0; /* Failed to grow */
-    }
+    if (!gb_grow_gap(gb, len))
+        return false; /* Failed to grow */
 
     /* Copy text into gap */
     memcpy(gb->gap, text, len);
     gb->gap += len;
     gb->modified = 1;
 
-    return 1;
+    return true;
 }
 
 /* Delete text from position */
@@ -351,10 +352,8 @@ static int gb_get_char(gap_buffer_t *gb, size_t pos)
     return (unsigned char) *ptr;
 }
 
-
-
 /* Load file into gap buffer */
-static int gb_load_file(gap_buffer_t *gb, FILE *fp)
+static bool gb_load_file(gap_buffer_t *gb, FILE *fp)
 {
     /* Clear existing content */
     gb->gap = gb->buffer;
@@ -364,20 +363,15 @@ static int gb_load_file(gap_buffer_t *gb, FILE *fp)
     size_t nread;
 
     while ((nread = fread(buf, 1, sizeof(buf), fp)) > 0) {
-        if (!gb_insert(gb, gb_length(gb), buf, nread)) {
-            return 0; /* Insert failed */
-        }
+        if (!gb_insert(gb, gb_length(gb), buf, nread))
+            return false; /* Insert failed */
     }
 
     gb->modified = 0; /* Just loaded, not modified */
-    return 1;
+    return true;
 }
 
-/* ============================================================================
- * Undo/Redo Implementation
- * ============================================================================
- * Track changes to enable undo (Ctrl-Z) and redo (Ctrl-R) functionality
- */
+/* Undo/Redo Implementation */
 
 typedef enum { UNDO_INSERT, UNDO_DELETE, UNDO_REPLACE } UndoType;
 
@@ -442,9 +436,8 @@ static void undo_clear_redo(UndoStack *stack)
 
     /* Update tail */
     stack->tail = stack->current;
-    if (stack->tail) {
+    if (stack->tail)
         stack->tail->next = NULL;
-    }
 }
 
 /* Add a new undo operation */
@@ -494,9 +487,8 @@ static void undo_push(UndoStack *stack,
     while (stack->count > stack->max_undos && stack->head) {
         UndoNode *old = stack->head;
         stack->head = old->next;
-        if (stack->head) {
+        if (stack->head)
             stack->head->prev = NULL;
-        }
         undo_free_node(old);
         stack->count--;
     }
@@ -506,11 +498,10 @@ static void undo_push(UndoStack *stack,
 static void gb_sync_to_rows(gap_buffer_t *gb);
 
 /* Perform undo operation */
-static int undo_perform(gap_buffer_t *gb, UndoStack *stack)
+static bool undo_perform(gap_buffer_t *gb, UndoStack *stack)
 {
-    if (!gb || !stack || !stack->current) {
-        return 0; /* Nothing to undo */
-    }
+    if (!gb || !stack || !stack->current)
+        return false; /* Nothing to undo */
 
     UndoNode *node = stack->current;
 
@@ -530,9 +521,8 @@ static int undo_perform(gap_buffer_t *gb, UndoStack *stack)
         /* For replace, we need the old text (stored in next node) */
         /* For now, treat as delete + insert */
         gb_delete(gb, node->pos, node->len);
-        if (node->prev && node->prev->type == UNDO_DELETE) {
+        if (node->prev && node->prev->type == UNDO_DELETE)
             gb_insert(gb, node->pos, node->prev->text, node->prev->len);
-        }
         break;
     }
 
@@ -545,15 +535,14 @@ static int undo_perform(gap_buffer_t *gb, UndoStack *stack)
     /* Mark as modified if we have undo history */
     gb->modified = (stack->current != NULL) ? 1 : 0;
 
-    return 1;
+    return true;
 }
 
 /* Perform redo operation */
-static int undo_redo(gap_buffer_t *gb, UndoStack *stack)
+static bool undo_redo(gap_buffer_t *gb, UndoStack *stack)
 {
-    if (!gb || !stack) {
-        return 0;
-    }
+    if (!gb || !stack)
+        return false;
 
     /* Find the node to redo */
     UndoNode *node = NULL;
@@ -563,9 +552,8 @@ static int undo_redo(gap_buffer_t *gb, UndoStack *stack)
         node = stack->head;
     }
 
-    if (!node) {
-        return 0; /* Nothing to redo */
-    }
+    if (!node)
+        return false; /* Nothing to redo */
 
     /* Re-apply the operation */
     switch (node->type) {
@@ -592,25 +580,23 @@ static int undo_redo(gap_buffer_t *gb, UndoStack *stack)
     /* Sync gap buffer back to rows for display */
     gb_sync_to_rows(gb);
 
-    return 1;
+    return true;
 }
 
 /* Track insertion for undo (wrapper for gb_insert) */
-static int gb_insert_with_undo(gap_buffer_t *gb,
-                               UndoStack *undo,
-                               size_t pos,
-                               const char *text,
-                               size_t len)
+static bool gb_insert_with_undo(gap_buffer_t *gb,
+                                UndoStack *undo,
+                                size_t pos,
+                                const char *text,
+                                size_t len)
 {
-    if (!gb_insert(gb, pos, text, len)) {
-        return 0;
-    }
+    if (!gb_insert(gb, pos, text, len))
+        return false;
 
-    if (undo) {
+    if (undo)
         undo_push(undo, UNDO_INSERT, pos, text, len);
-    }
 
-    return 1;
+    return true;
 }
 
 /* Track deletion for undo (wrapper for gb_delete) */
@@ -632,9 +618,8 @@ static void gb_delete_with_undo(gap_buffer_t *gb,
             }
             text[i] = '\0';
 
-            if (i > 0) {
+            if (i > 0)
                 undo_push(undo, UNDO_DELETE, pos, text, i);
-            }
             free(text);
         }
     }
@@ -1293,17 +1278,15 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
         size_t line_end = pos;
 
         /* Find end of line */
-        while (line_end < len && gb_get_char(gb, line_end) != '\n') {
+        while (line_end < len && gb_get_char(gb, line_end) != '\n')
             line_end++;
-        }
 
         /* Extract line */
         size_t line_len = line_end - line_start;
         char *line = malloc(line_len + 1);
         if (line) {
-            for (size_t i = 0; i < line_len; i++) {
+            for (size_t i = 0; i < line_len; i++)
                 line[i] = gb_get_char(gb, line_start + i);
-            }
             line[line_len] = '\0';
 
             insert_row(ec.num_rows, line, line_len);
@@ -1312,15 +1295,13 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
 
         /* Move past newline */
         pos = line_end;
-        if (pos < len && gb_get_char(gb, pos) == '\n') {
+        if (pos < len && gb_get_char(gb, pos) == '\n')
             pos++;
-        }
     }
 
     /* Ensure at least one row */
-    if (ec.num_rows == 0) {
+    if (ec.num_rows == 0)
         insert_row(0, "", 0);
-    }
 
     /* Update modified flag from gap buffer */
     ec.modified = gb->modified;
@@ -1560,9 +1541,8 @@ static void search_cb(char *query, int key)
             ec.row_offset = ec.num_rows;
             saved_highlight_line = current;
             saved_hightlight = malloc(row->render_size);
-            if (saved_hightlight) {
+            if (saved_hightlight)
                 memcpy(saved_hightlight, row->highlight, row->render_size);
-            }
             memset(&row->highlight[match - row->render], MATCH, strlen(query));
             break;
         }
@@ -1759,14 +1739,14 @@ static void handle_sigcont()
     refresh_screen();
 }
 
-static int confirm_dialog(const char *msg)
+static bool confirm_dialog(const char *msg)
 {
-    int choice = 0;  // 0 = No (default), 1 = Yes
+    bool choice = false;  // false = No (default), true = Yes
 
     while (1) {
         // Build the message with highlighted options
         char status_msg[256];
-        if (choice == 0) {
+        if (!choice) {
             snprintf(status_msg, sizeof(status_msg),
                      "%s  \x1b[7m[ No ]\x1b[m   Yes   (ESC: cancel)", msg);
         } else {
@@ -1785,18 +1765,18 @@ static int confirm_dialog(const char *msg)
         case '\x1b':  // ESC key
         case CTRL_('q'):
             set_status_message("");
-            return 0;  // Cancel = No
+            return false;  // Cancel = No
         case ARROW_LEFT:
         case ARROW_RIGHT:
             choice = !choice;  // Toggle between Yes and No
             break;
         case 'y':
         case 'Y':
-            choice = 1;  // Quick key for Yes
+            choice = true;  // Quick key for Yes
             break;
         case 'n':
         case 'N':
-            choice = 0;  // Quick key for No
+            choice = false;  // Quick key for No
             break;
         }
     }
@@ -2021,9 +2001,8 @@ static void init_editor()
 
     /* Initialize gap buffer and undo/redo - always enabled */
     ec.gb = gb_init(GB_INITIAL_SIZE);
-    if (ec.gb) {
+    if (ec.gb)
         ec.undo_stack = undo_init(MAX_UNDO_LEVELS);
-    }
 }
 
 int main(int argc, char *argv[])
