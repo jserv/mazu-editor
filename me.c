@@ -938,8 +938,8 @@ static void draw_statusbar(editor_buf *eb)
     int r_len = snprintf(
         r_status, sizeof(r_status), "%d/%d lines  %d/%d cols [ %2d:%2d:%2d ]",
         (ec.cursor_y + 1 > ec.num_rows) ? ec.num_rows : ec.cursor_y + 1,
-        ec.num_rows, (ec.cursor_x + 1 > col_size) ? col_size : ec.cursor_x + 1,
-        col_size, currtime->tm_hour, currtime->tm_min, currtime->tm_sec);
+        ec.num_rows, ec.cursor_x + 1, col_size, currtime->tm_hour,
+        currtime->tm_min, currtime->tm_sec);
     if (len > ec.screen_cols)
         len = ec.screen_cols;
     buf_append(eb, status, len);
