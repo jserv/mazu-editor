@@ -232,7 +232,7 @@ typedef struct {
 #define GB_GROW_SIZE 4096     /* 4KB growth increment */
 
 /* Initialize a gap buffer with given size */
-static gap_buffer_t *gb_init(size_t initial_size)
+static gap_buffer_t *gap_init(size_t initial_size)
 {
     gap_buffer_t *gb = malloc(sizeof(gap_buffer_t));
     if (!gb)
@@ -251,13 +251,13 @@ static gap_buffer_t *gb_init(size_t initial_size)
 }
 
 /* Get total text length (excluding gap) */
-static inline size_t gb_length(gap_buffer_t *gb)
+static inline size_t gap_length(gap_buffer_t *gb)
 {
     return (gb->gap - gb->buffer) + (gb->ebuffer - gb->egap);
 }
 
 /* Convert file position to buffer pointer */
-static char *gb_ptr(gap_buffer_t *gb, size_t pos)
+static char *gap_ptr(gap_buffer_t *gb, size_t pos)
 {
     size_t front_size = gb->gap - gb->buffer;
 
@@ -267,9 +267,9 @@ static char *gb_ptr(gap_buffer_t *gb, size_t pos)
 }
 
 /* Move gap to position */
-static void gb_move_gap(gap_buffer_t *gb, size_t pos)
+static void gap_move(gap_buffer_t *gb, size_t pos)
 {
-    char *dest = gb_ptr(gb, pos);
+    char *dest = gap_ptr(gb, pos);
 
     if (dest < gb->gap) {
         /* Move gap backward - shift text forward */
@@ -287,7 +287,7 @@ static void gb_move_gap(gap_buffer_t *gb, size_t pos)
 }
 
 /* Grow the gap to ensure minimum size */
-static bool gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
+static bool gap_grow(gap_buffer_t *gb, size_t min_gap)
 {
     size_t gap_size = gb->egap - gb->gap;
 
@@ -295,7 +295,7 @@ static bool gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
         return true; /* Already large enough */
 
     /* Calculate new size */
-    size_t text_size = gb_length(gb);
+    size_t text_size = gap_length(gb);
     size_t new_size = text_size + min_gap + GB_GROW_SIZE;
 
     /* Save current gap position */
@@ -322,16 +322,16 @@ static bool gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
 }
 
 /* Insert text at position */
-static bool gb_insert(gap_buffer_t *gb,
-                      size_t pos,
-                      const char *text,
-                      size_t len)
+static bool gap_insert(gap_buffer_t *gb,
+                       size_t pos,
+                       const char *text,
+                       size_t len)
 {
     /* Move gap to insertion point */
-    gb_move_gap(gb, pos);
+    gap_move(gb, pos);
 
     /* Ensure gap is large enough */
-    if (!gb_grow_gap(gb, len))
+    if (!gap_grow(gb, len))
         return false; /* Failed to grow */
 
     /* Copy text into gap */
@@ -343,10 +343,10 @@ static bool gb_insert(gap_buffer_t *gb,
 }
 
 /* Delete text from position */
-static void gb_delete(gap_buffer_t *gb, size_t pos, size_t len)
+static void gap_delete(gap_buffer_t *gb, size_t pos, size_t len)
 {
     /* Move gap to deletion point */
-    gb_move_gap(gb, pos);
+    gap_move(gb, pos);
 
     /* Extend gap to cover deleted text */
     size_t available = gb->ebuffer - gb->egap;
@@ -358,13 +358,13 @@ static void gb_delete(gap_buffer_t *gb, size_t pos, size_t len)
 }
 
 /* Get character at position */
-static int gb_get_char(gap_buffer_t *gb, size_t pos)
+static int gap_get_char(gap_buffer_t *gb, size_t pos)
 {
-    return pos >= gb_length(gb) ? -1 : (unsigned char) *gb_ptr(gb, pos);
+    return pos >= gap_length(gb) ? -1 : (unsigned char) *gap_ptr(gb, pos);
 }
 
 /* Load file into gap buffer */
-static bool gb_load_file(gap_buffer_t *gb, FILE *fp)
+static bool gap_load_file(gap_buffer_t *gb, FILE *fp)
 {
     /* Clear existing content */
     gb->gap = gb->buffer;
@@ -374,7 +374,7 @@ static bool gb_load_file(gap_buffer_t *gb, FILE *fp)
     size_t nread;
 
     while ((nread = fread(buf, 1, sizeof(buf), fp)) > 0) {
-        if (!gb_insert(gb, gb_length(gb), buf, nread))
+        if (!gap_insert(gb, gap_length(gb), buf, nread))
             return false; /* Insert failed */
     }
 
@@ -500,7 +500,7 @@ static void undo_push(undo_stack_t *stack,
 }
 
 /* Forward declarations - will be defined later */
-static void gb_sync_to_rows(gap_buffer_t *gb);
+static void gap_sync_to_rows(gap_buffer_t *gb);
 
 /* Perform undo operation */
 static bool undo_perform(gap_buffer_t *gb, undo_stack_t *stack)
@@ -514,20 +514,20 @@ static bool undo_perform(gap_buffer_t *gb, undo_stack_t *stack)
     switch (node->type) {
     case UNDO_INSERT:
         /* Was an insert, so delete it */
-        gb_delete(gb, node->pos, node->len);
+        gap_delete(gb, node->pos, node->len);
         break;
 
     case UNDO_DELETE:
         /* Was a delete, so insert it back */
-        gb_insert(gb, node->pos, node->text, node->len);
+        gap_insert(gb, node->pos, node->text, node->len);
         break;
 
     case UNDO_REPLACE:
         /* For replace, we need the old text (stored in next node) */
         /* For now, treat as delete + insert */
-        gb_delete(gb, node->pos, node->len);
+        gap_delete(gb, node->pos, node->len);
         if (node->prev && node->prev->type == UNDO_DELETE)
-            gb_insert(gb, node->pos, node->prev->text, node->prev->len);
+            gap_insert(gb, node->pos, node->prev->text, node->prev->len);
         break;
     }
 
@@ -535,7 +535,7 @@ static bool undo_perform(gap_buffer_t *gb, undo_stack_t *stack)
     stack->current = node->prev;
 
     /* Sync gap buffer back to rows for display */
-    gb_sync_to_rows(gb);
+    gap_sync_to_rows(gb);
 
     /* Mark as modified if we have undo history */
     gb->modified = (stack->current != NULL);
@@ -559,18 +559,18 @@ static bool undo_redo(gap_buffer_t *gb, undo_stack_t *stack)
     switch (node->type) {
     case UNDO_INSERT:
         /* Re-insert the text */
-        gb_insert(gb, node->pos, node->text, node->len);
+        gap_insert(gb, node->pos, node->text, node->len);
         break;
 
     case UNDO_DELETE:
         /* Re-delete the text */
-        gb_delete(gb, node->pos, node->len);
+        gap_delete(gb, node->pos, node->len);
         break;
 
     case UNDO_REPLACE:
         /* Re-replace the text */
-        gb_delete(gb, node->pos, node->len);
-        gb_insert(gb, node->pos, node->text, node->len);
+        gap_delete(gb, node->pos, node->len);
+        gap_insert(gb, node->pos, node->text, node->len);
         break;
     }
 
@@ -578,19 +578,19 @@ static bool undo_redo(gap_buffer_t *gb, undo_stack_t *stack)
     stack->current = node;
 
     /* Sync gap buffer back to rows for display */
-    gb_sync_to_rows(gb);
+    gap_sync_to_rows(gb);
 
     return true;
 }
 
-/* Track insertion for undo (wrapper for gb_insert) */
-static bool gb_insert_with_undo(gap_buffer_t *gb,
-                                undo_stack_t *undo,
-                                size_t pos,
-                                const char *text,
-                                size_t len)
+/* Track insertion for undo (wrapper for gap_insert) */
+static bool gap_insert_with_undo(gap_buffer_t *gb,
+                                 undo_stack_t *undo,
+                                 size_t pos,
+                                 const char *text,
+                                 size_t len)
 {
-    if (!gb_insert(gb, pos, text, len))
+    if (!gap_insert(gb, pos, text, len))
         return false;
 
     if (undo)
@@ -599,19 +599,19 @@ static bool gb_insert_with_undo(gap_buffer_t *gb,
     return true;
 }
 
-/* Track deletion for undo (wrapper for gb_delete) */
-static void gb_delete_with_undo(gap_buffer_t *gb,
-                                undo_stack_t *undo,
-                                size_t pos,
-                                size_t len)
+/* Track deletion for undo (wrapper for gap_delete) */
+static void gap_delete_with_undo(gap_buffer_t *gb,
+                                 undo_stack_t *undo,
+                                 size_t pos,
+                                 size_t len)
 {
-    if (undo && len > 0 && pos < gb_length(gb)) {
+    if (undo && len > 0 && pos < gap_length(gb)) {
         /* Save the text being deleted */
         char *text = malloc(len + 1);
         if (text) {
             size_t i;
-            for (i = 0; i < len && pos + i < gb_length(gb); i++) {
-                int ch = gb_get_char(gb, pos + i);
+            for (i = 0; i < len && pos + i < gap_length(gb); i++) {
+                int ch = gap_get_char(gb, pos + i);
                 if (ch == -1)
                     break;
                 text[i] = ch;
@@ -624,7 +624,7 @@ static void gb_delete_with_undo(gap_buffer_t *gb,
         }
     }
 
-    gb_delete(gb, pos, len);
+    gap_delete(gb, pos, len);
 }
 
 typedef struct {
@@ -647,6 +647,63 @@ typedef struct {
     int flags;
 } editor_syntax_t;
 
+/* X-macro for editor modes */
+#define EDITOR_MODES                                  \
+    _(NORMAL, "NORMAL", "Default editing mode")       \
+    _(SEARCH, "SEARCH", "Search mode (Ctrl-F)")       \
+    _(PROMPT, "PROMPT", "Generic prompt mode")        \
+    _(SELECT, "SELECT", "Text selection mode")        \
+    _(CONFIRM, "CONFIRM", "Confirmation dialog mode") \
+    _(HELP, "HELP", "Help screen mode")
+
+/* X-macro for key bindings - centralizes all shortcuts */
+#define KEY_BINDINGS                  \
+    _(QUIT, 'q', "Exit editor")       \
+    _(SAVE, 's', "Save file")         \
+    _(FIND, 'f', "Search text")       \
+    _(SELECT, 'b', "Begin selection") \
+    _(COPY, 'c', "Copy text")         \
+    _(CUT, 'x', "Cut text")           \
+    _(PASTE, 'v', "Paste text")       \
+    _(UNDO, 'z', "Undo last action")  \
+    _(REDO, 'r', "Redo last undo")    \
+    _(HELP, '?', "Show help")
+
+/* clang-format off */
+typedef enum {
+#define _(mode, name, desc) MODE_##mode,
+    EDITOR_MODES
+#undef _
+    MODE_COUNT /* Total number of modes */
+} editor_mode_t;
+/* clang-format on */
+
+/* Text selection state */
+typedef struct {
+    int start_x, start_y; /* Selection start position */
+    int end_x, end_y;     /* Selection end position */
+    bool active;          /* Is selection active? */
+} selection_state_t;
+
+/* Mode-specific state data */
+typedef union {
+    struct {
+        char *query;
+        int last_match;
+        int direction;
+    } search;
+    struct {
+        char *prompt_text;
+        void (*callback)(char *, int);
+        char *buffer;
+        size_t buffer_size;
+    } prompt;
+    struct {
+        const char *message;
+        bool choice; /* false = No, true = Yes */
+    } confirm;
+} mode_data_t;
+
 /* Editor config structure */
 struct {
     int cursor_x, cursor_y, render_x;
@@ -664,6 +721,11 @@ struct {
     /* Gap buffer and undo/redo support */
     gap_buffer_t *gb;
     undo_stack_t *undo_stack;
+    /* Editor mode state machine */
+    editor_mode_t mode;
+    editor_mode_t prev_mode;     /* For returning from temporary modes */
+    mode_data_t mode_state;      /* Mode-specific state data */
+    selection_state_t selection; /* Text selection state */
 #if ENABLE_TIMER
     /* Timer support for time update */
     time_t last_update_time;
@@ -684,6 +746,10 @@ struct {
     .syntax = NULL,
     .gb = NULL,
     .undo_stack = NULL,
+    .mode = MODE_NORMAL,
+    .prev_mode = MODE_NORMAL,
+    .mode_state = {0},
+    .selection = {0, 0, 0, 0, false},
 #if ENABLE_TIMER
     .last_update_time = 0,
 #endif
@@ -702,12 +768,25 @@ enum editor_key {
     HOME_KEY, END_KEY, DEL_KEY,
 };
 
-enum editor_highlight {
-    NORMAL,     MATCH,
-    SL_COMMENT, ML_COMMENT,
-    KEYWORD_1,  KEYWORD_2,  KEYWORD_3,
-    STRING,     NUMBER,
-};
+/* X-macro for syntax highlighting types */
+#define HIGHLIGHT_TYPES                         \
+    _(NORMAL, 97, "Default text")               \
+    _(MATCH, 43, "Search match")                \
+    _(SL_COMMENT, 36, "Single-line comment")    \
+    _(ML_COMMENT, 36, "Multi-line comment")     \
+    _(KEYWORD_1, 93, "Primary keyword")         \
+    _(KEYWORD_2, 92, "Secondary keyword")       \
+    _(KEYWORD_3, 36, "Preprocessor")            \
+    _(STRING, 91, "String literal")             \
+    _(NUMBER, 31, "Numeric literal")
+
+/* Generate highlight enum using X-macro */
+typedef enum {
+#define _(type, color, desc) type,
+    HIGHLIGHT_TYPES
+#undef _
+    HIGHLIGHT_COUNT
+} highlight_type_t;
 /* clang-format on */
 
 #define HIGHLIGHT_NUMBERS (1 << 0)
@@ -743,7 +822,98 @@ editor_syntax_t DB[] = {
 
 static char *ui_prompt(const char *msg, void (*callback)(char *, int));
 
-static void term_clear()
+/* Mode management implementation */
+static void mode_set(editor_mode_t new_mode)
+{
+    /* Save current mode as previous (unless entering temporary mode) */
+    if (ec.mode != MODE_PROMPT && ec.mode != MODE_CONFIRM &&
+        ec.mode != MODE_HELP)
+        ec.prev_mode = ec.mode;
+
+    /* Clean up old mode state */
+    switch (ec.mode) {
+    case MODE_SEARCH:
+        free(ec.mode_state.search.query);
+        ec.mode_state.search.query = NULL;
+        break;
+    case MODE_PROMPT:
+        free(ec.mode_state.prompt.buffer);
+        ec.mode_state.prompt.buffer = NULL;
+        break;
+    default:
+        break;
+    }
+
+    /* Initialize new mode */
+    ec.mode = new_mode;
+    memset(&ec.mode_state, 0, sizeof(ec.mode_state));
+
+    /* Mode-specific initialization */
+    switch (new_mode) {
+    case MODE_SELECT:
+        ec.selection.start_x = ec.cursor_x;
+        ec.selection.start_y = ec.cursor_y;
+        ec.selection.end_x = ec.cursor_x;
+        ec.selection.end_y = ec.cursor_y;
+        ec.selection.active = true;
+        ui_set_message("-- SELECT MODE -- Use arrows to extend, ESC to cancel");
+        break;
+    case MODE_SEARCH:
+        ec.mode_state.search.direction = 1;
+        ec.mode_state.search.last_match = -1;
+        break;
+    case MODE_HELP:
+        ui_set_message("-- HELP -- Press any key to exit");
+        break;
+    case MODE_NORMAL:
+        ec.selection.active = false;
+        ui_set_message("");
+        break;
+    default:
+        break;
+    }
+}
+
+static void mode_restore(void)
+{
+    mode_set(ec.prev_mode);
+}
+
+static const char *mode_get_name(editor_mode_t mode)
+{
+    /* Generate mode names using X-macro */
+    static const char *mode_names[] = {
+#define _(mode, name, desc) [MODE_##mode] = name,
+        EDITOR_MODES
+#undef _
+    };
+
+    if (mode >= 0 && mode < MODE_COUNT)
+        return mode_names[mode];
+    return "UNKNOWN";
+}
+
+static void help_generate(char *buffer, size_t size)
+{
+    /* Generate help text from key bindings X-macro */
+    int offset = snprintf(buffer, size, "Key Bindings:\n");
+
+#define _(action, key, desc) \
+    offset +=                \
+        snprintf(buffer + offset, size - offset, "  ^%c - %s\n", key, desc);
+    KEY_BINDINGS
+#undef _
+
+    offset += snprintf(buffer + offset, size - offset, "\nEditor Modes:\n");
+
+#define _(mode, name, desc) \
+    offset +=               \
+        snprintf(buffer + offset, size - offset, "  %s - %s\n", name, desc);
+    EDITOR_MODES
+#undef _
+}
+
+static void term_clear(void)
 {
     write(STDOUT_FILENO, "\x1b[2J", 4);
 }
@@ -756,19 +926,19 @@ static void panic(const char *s)
     exit(1);
 }
 
-static void term_open_buffer()
+static void term_open_buffer(void)
 {
     if (write(STDOUT_FILENO, "\x1b[?47h", 6) == -1)
         panic("Error changing terminal buffer");
 }
 
-static void term_disable_raw()
+static void term_disable_raw(void)
 {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &ec.orig_termios) == -1)
         panic("Failed to disable raw mode");
 }
 
-static void term_enable_raw()
+static void term_enable_raw(void)
 {
     if (tcgetattr(STDIN_FILENO, &ec.orig_termios) == -1)
         panic("Failed to get current terminal state");
@@ -785,7 +955,7 @@ static void term_enable_raw()
         panic("Failed to set raw mode");
 }
 
-static int term_read_key()
+static int term_read_key(void)
 {
     int nread;
     char c;
@@ -857,14 +1027,14 @@ static int term_get_size(int *screen_rows, int *screen_cols)
     return 0;
 }
 
-static void term_update_size()
+static void term_update_size(void)
 {
     if (term_get_size(&ec.screen_rows, &ec.screen_cols) == -1)
         panic("Failed to get window size");
     ec.screen_rows -= 2;
 }
 
-static void term_close_buffer()
+static void term_close_buffer(void)
 {
     if (write(STDOUT_FILENO, "\x1b[?9l", 5) == -1 ||
         write(STDOUT_FILENO, "\x1b[?47l", 6) == -1)
@@ -997,28 +1167,19 @@ static void syntax_highlight(editor_row_t *row)
 /* Reference: https://misc.flogisoft.com/bash/tip_colors_and_formatting */
 static int syntax_token_color(int highlight)
 {
-    switch (highlight) {
-    case SL_COMMENT:
-    case ML_COMMENT:
-        return 36; /* Cyan */
-    case KEYWORD_1:
-        return 93; /* Light yellow */
-    case KEYWORD_2:
-        return 92; /* Light green */
-    case KEYWORD_3:
-        return 36; /* Cyan */
-    case STRING:
-        return 91; /* Light red */
-    case NUMBER:
-        return 31; /* Red */
-    case MATCH:
-        return 43; /* Yellow background */
-    default:
-        return 97;
-    }
+    /* Generate color mapping using X-macro */
+    static const int highlight_colors[] = {
+#define _(type, color, desc) [type] = color,
+        HIGHLIGHT_TYPES
+#undef _
+    };
+
+    if (highlight >= 0 && highlight < HIGHLIGHT_COUNT)
+        return highlight_colors[highlight];
+    return 97; /* Default white */
 }
 
-static void syntax_select()
+static void syntax_select(void)
 {
     ec.syntax = NULL;
     if (!ec.file_name)
@@ -1173,7 +1334,7 @@ static void editor_copy(int cut)
     ui_set_message(cut ? "Text cut" : "Text copied");
 }
 
-static void editor_cut()
+static void editor_cut(void)
 {
     if (!ec.gb || ec.cursor_y >= ec.num_rows)
         return;
@@ -1190,7 +1351,7 @@ static void editor_cut()
     if (ec.cursor_y < ec.num_rows - 1)
         line_len++; /* Include newline */
 
-    gb_delete_with_undo(ec.gb, ec.undo_stack, line_start, line_len);
+    gap_delete_with_undo(ec.gb, ec.undo_stack, line_start, line_len);
 
     /* Remove row from display structure */
     editor_row_t *row = &ec.row[ec.cursor_y];
@@ -1222,7 +1383,7 @@ static void editor_cut()
     ec.modified = true;
 }
 
-static void editor_paste()
+static void editor_paste(void)
 {
     if (!ec.copied_char_buffer || !ec.gb)
         return;
@@ -1235,8 +1396,8 @@ static void editor_paste()
 
     /* Insert the copied text */
     size_t paste_len = strlen(ec.copied_char_buffer);
-    if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, ec.copied_char_buffer,
-                            paste_len)) {
+    if (gap_insert_with_undo(ec.gb, ec.undo_stack, pos, ec.copied_char_buffer,
+                             paste_len)) {
         /* Update row directly */
         if (ec.cursor_y == ec.num_rows)
             row_insert(ec.num_rows, "", 0);
@@ -1252,7 +1413,7 @@ static void editor_paste()
     }
 }
 
-static void editor_newline()
+static void editor_newline(void)
 {
     if (!ec.gb)
         return;
@@ -1265,7 +1426,7 @@ static void editor_newline()
 
     /* Insert newline character into gap buffer */
     char nl = '\n';
-    if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, &nl, 1)) {
+    if (gap_insert_with_undo(ec.gb, ec.undo_stack, pos, &nl, 1)) {
         /* Update row structure directly */
         if (ec.cursor_x == 0) {
             row_insert(ec.cursor_y, "", 0);
@@ -1285,7 +1446,7 @@ static void editor_newline()
 }
 
 /* Sync gap buffer to rows for display */
-static void gb_sync_to_rows(gap_buffer_t *gb)
+static void gap_sync_to_rows(gap_buffer_t *gb)
 {
     if (!gb)
         return;
@@ -1304,13 +1465,13 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
     ec.num_rows = 0;
 
     /* Convert gap buffer to rows */
-    size_t pos = 0, len = gb_length(gb);
+    size_t pos = 0, len = gap_length(gb);
 
     while (pos < len) {
         size_t line_start = pos, line_end = pos;
 
         /* Find end of line */
-        while (line_end < len && gb_get_char(gb, line_end) != '\n')
+        while (line_end < len && gap_get_char(gb, line_end) != '\n')
             line_end++;
 
         /* Extract line */
@@ -1318,14 +1479,14 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
         char *line = malloc(line_len + 1);
         if (line) {
             for (size_t i = 0; i < line_len; i++)
-                line[i] = gb_get_char(gb, line_start + i);
+                line[i] = gap_get_char(gb, line_start + i);
             line[line_len] = '\0';
             row_insert(ec.num_rows, line, line_len);
             free(line);
         }
 
         /* Move past newline */
-        pos = line_end + (pos < len && gb_get_char(gb, line_end) == '\n');
+        pos = line_end + (pos < len && gap_get_char(gb, line_end) == '\n');
     }
 
     /* Ensure at least one row */
@@ -1391,8 +1552,8 @@ static void editor_insert_char(int c)
     pos += ec.cursor_x;
 
     /* Insert the complete UTF-8 sequence as one undo operation */
-    if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, utf8_buffer.bytes,
-                            utf8_buffer.len)) {
+    if (gap_insert_with_undo(ec.gb, ec.undo_stack, pos, utf8_buffer.bytes,
+                             utf8_buffer.len)) {
         /* Update current row directly */
         if (ec.cursor_y == ec.num_rows)
             row_insert(ec.num_rows, "", 0);
@@ -1413,7 +1574,7 @@ static void editor_insert_char(int c)
     utf8_buffer.expected = 0;
 }
 
-static void editor_delete_char()
+static void editor_delete_char(void)
 {
     if (!ec.gb)
         return;
@@ -1434,7 +1595,7 @@ static void editor_delete_char()
         const char *prev = utf8_prev_char(row->chars, row->chars + ec.cursor_x);
         int prev_pos = prev - row->chars, char_len = ec.cursor_x - prev_pos;
 
-        gb_delete_with_undo(ec.gb, ec.undo_stack, pos + prev_pos, char_len);
+        gap_delete_with_undo(ec.gb, ec.undo_stack, pos + prev_pos, char_len);
 
         /* Update row directly */
         memmove(&row->chars[prev_pos], &row->chars[ec.cursor_x],
@@ -1447,7 +1608,7 @@ static void editor_delete_char()
         /* Delete newline - join with previous line */
         if (ec.cursor_y > 0) {
             pos--; /* Point to previous line's newline */
-            gb_delete_with_undo(ec.gb, ec.undo_stack, pos, 1);
+            gap_delete_with_undo(ec.gb, ec.undo_stack, pos, 1);
 
             /* Join lines in row structure */
             ec.cursor_x = ec.row[ec.cursor_y - 1].size;
@@ -1502,7 +1663,7 @@ static void file_open(char *file_name)
     if (ec.gb) {
         /* Rewind file to beginning */
         fseek(file, 0, SEEK_SET);
-        gb_load_file(ec.gb, file);
+        gap_load_file(ec.gb, file);
 
         /* Rewind for row loading */
         fseek(file, 0, SEEK_SET);
@@ -1522,7 +1683,7 @@ static void file_open(char *file_name)
     ec.modified = false;
 }
 
-static void file_save()
+static void file_save(void)
 {
     if (!ec.file_name) {
         ec.file_name = ui_prompt("Save as: %s (ESC to cancel)", NULL);
@@ -1563,7 +1724,10 @@ static void search_callback(char *query, int key)
     static int saved_highlight_line;
     static char *saved_hightlight = NULL;
 
-    if (saved_hightlight) {
+    /* Restore previous highlighting safely */
+    if (saved_hightlight && saved_highlight_line >= 0 &&
+        saved_highlight_line < ec.num_rows &&
+        ec.row[saved_highlight_line].highlight) {
         memcpy(ec.row[saved_highlight_line].highlight, saved_hightlight,
                ec.row[saved_highlight_line].render_size);
         free(saved_hightlight);
@@ -1588,8 +1752,10 @@ static void search_callback(char *query, int key)
         /* Count total matches when search term changes */
         search_total_matches = 0;
         search_current_match = 0;
-        if (strlen(query) > 0) {
+        if (query && strlen(query) > 0) {
             for (int i = 0; i < ec.num_rows; i++) {
+                if (!ec.row[i].render)
+                    continue;
                 char *p = ec.row[i].render;
                 while ((p = strstr(p, query)) != NULL) {
                     search_total_matches++;
@@ -1598,6 +1764,10 @@ static void search_callback(char *query, int key)
             }
         }
     }
+    /* Only search if we have a valid query */
+    if (!query || strlen(query) == 0)
+        return;
+
     int current = search_last_match;
     for (int i = 0; i < ec.num_rows; i++) {
         current += direction;
@@ -1606,6 +1776,8 @@ static void search_callback(char *query, int key)
         else if (current == ec.num_rows)
             current = 0;
         editor_row_t *row = &ec.row[current];
+        if (!row->render)
+            continue;
         char *match = strstr(row->render, query);
         if (match) {
             search_last_match = current;
@@ -1618,20 +1790,22 @@ static void search_callback(char *query, int key)
                 memcpy(saved_hightlight, row->highlight, row->render_size);
             memset(&row->highlight[match - row->render], MATCH, strlen(query));
 
-            /* Update match counter */
-            if (direction == 1)
-                search_current_match =
-                    (search_current_match % search_total_matches) + 1;
-            else
-                search_current_match = (search_current_match - 1) > 0
-                                           ? search_current_match - 1
-                                           : search_total_matches;
+            /* Update match counter safely */
+            if (search_total_matches > 0) {
+                if (direction == 1)
+                    search_current_match =
+                        (search_current_match % search_total_matches) + 1;
+                else
+                    search_current_match = (search_current_match - 1) > 0
+                                               ? search_current_match - 1
+                                               : search_total_matches;
+            }
             break;
         }
     }
 }
 
-static void search_find()
+static void search_find(void)
 {
     int saved_x = ec.cursor_x, saved_y = ec.cursor_y;
     int saved_col = ec.col_offset, saved_row = ec.row_offset;
@@ -1650,6 +1824,9 @@ static void search_find()
         ec.col_offset = saved_col;
         ec.row_offset = saved_row;
     }
+
+    /* Return to normal mode after search completes */
+    mode_set(MODE_NORMAL);
 }
 
 static void buf_append(editor_buf_t *eb, const char *s, int len)
@@ -1662,12 +1839,12 @@ static void buf_append(editor_buf_t *eb, const char *s, int len)
     eb->len += len;
 }
 
-static void buf_free(editor_buf_t *eb)
+static void buf_destroy(editor_buf_t *eb)
 {
     free(eb->buf);
 }
 
-static void editor_scroll()
+static void editor_scroll(void)
 {
     ec.render_x = 0;
     if (ec.cursor_y < ec.num_rows)
@@ -1687,8 +1864,10 @@ static void ui_draw_statusbar(editor_buf_t *eb)
     buf_append(eb, "\x1b[100m", 6); /* Dark gray */
     char status[80], r_status[80];
 
-    int len = snprintf(status, sizeof(status), "  File: %.20s %s",
-                       ec.file_name ? ec.file_name : "< New >",
+    /* Include mode in status line */
+    const char *mode_name = mode_get_name(ec.mode);
+    int len = snprintf(status, sizeof(status), " [%s] File: %.20s %s",
+                       mode_name, ec.file_name ? ec.file_name : "< New >",
                        ec.modified ? "(modified)" : "");
     int col_size = ec.row &&ec.cursor_y <= ec.num_rows - 1
                        ? col_size = ec.row[ec.cursor_y].size
@@ -1824,7 +2003,7 @@ static void ui_draw_rows(editor_buf_t *eb)
     }
 }
 
-static void editor_refresh()
+static void editor_refresh(void)
 {
     editor_scroll();
     editor_buf_t eb = {NULL, 0};
@@ -1839,11 +2018,12 @@ static void editor_refresh()
     buf_append(&eb, buf, strlen(buf));
     buf_append(&eb, "\x1b[?25h", 6);
     write(STDOUT_FILENO, eb.buf, eb.len);
-    buf_free(&eb);
+    buf_destroy(&eb);
 }
 
-static void sig_winch_handler()
+static void sig_winch_handler(int sig)
 {
+    (void) sig; /* Unused parameter */
     term_update_size();
     if (ec.cursor_y > ec.screen_rows)
         ec.cursor_y = ec.screen_rows - 1;
@@ -1852,8 +2032,9 @@ static void sig_winch_handler()
     editor_refresh();
 }
 
-static void sig_cont_handler()
+static void sig_cont_handler(int sig)
 {
+    (void) sig; /* Unused parameter */
     term_disable_raw();
     term_open_buffer();
     term_enable_raw();
@@ -2025,10 +2206,61 @@ static void editor_move_cursor(int key)
         ec.cursor_x = row_len;
 }
 
-static void editor_process_key()
+static void editor_process_key(void)
 {
     static int indent_level = 0;
     int c = term_read_key();
+
+    /* Handle mode-specific keys first */
+    switch (ec.mode) {
+    case MODE_SELECT:
+        switch (c) {
+        case '\x1b': /* ESC - cancel selection */
+            mode_set(MODE_NORMAL);
+            return;
+        case ARROW_UP:
+        case ARROW_DOWN:
+        case ARROW_LEFT:
+        case ARROW_RIGHT:
+            /* Update selection while moving */
+            editor_move_cursor(c);
+            ec.selection.end_x = ec.cursor_x;
+            ec.selection.end_y = ec.cursor_y;
+            return;
+        case CTRL_('c'): /* Copy selection */
+            /* TODO: Implement selection copy */
+            ui_set_message("Selection copied");
+            mode_set(MODE_NORMAL);
+            return;
+        case CTRL_('x'): /* Cut selection */
+            /* TODO: Implement selection cut */
+            ui_set_message("Selection cut");
+            mode_set(MODE_NORMAL);
+            return;
+        default:
+            /* Exit selection mode for other keys */
+            mode_set(MODE_NORMAL);
+            break;
+        }
+        break;
+
+    case MODE_HELP:
+        /* Any key exits help mode */
+        mode_restore();
+        return;
+
+    case MODE_SEARCH:
+    case MODE_PROMPT:
+    case MODE_CONFIRM:
+        /* These modes handle their own input */
+        return;
+
+    case MODE_NORMAL:
+    default:
+        break;
+    }
+
+    /* Normal mode key handling */
     switch (c) {
     case '\r':
         editor_newline();
@@ -2110,6 +2342,20 @@ static void editor_process_key()
     case CTRL_('f'):
         search_find();
         break;
+    case CTRL_('b'): /* Begin selection mode */
+        mode_set(MODE_SELECT);
+        break;
+    case CTRL_('?'): /* Show help */
+        mode_set(MODE_HELP);
+        /* Generate comprehensive help */
+        {
+            static char help_buffer[256];
+            help_generate(help_buffer, sizeof(help_buffer));
+            ui_set_message(
+                "Press any key to close. Key bindings: ^Q=Quit ^S=Save ^F=Find "
+                "^B=Select ^Z=Undo ^R=Redo");
+        }
+        break;
     case BACKSPACE:
     case CTRL_('h'):
     case DEL_KEY:
@@ -2153,14 +2399,14 @@ static bool timer_check_update(void)
 }
 #endif
 
-static void editor_init()
+static void editor_init(void)
 {
     term_update_size();
     signal(SIGWINCH, sig_winch_handler);
     signal(SIGCONT, sig_cont_handler);
 
     /* Initialize gap buffer and undo/redo - always enabled */
-    ec.gb = gb_init(GB_INITIAL_SIZE);
+    ec.gb = gap_init(GB_INITIAL_SIZE);
     if (ec.gb)
         ec.undo_stack = undo_init(MAX_UNDO_LEVELS);
 
@@ -2176,9 +2422,7 @@ int main(int argc, char *argv[])
     if (argc >= 2)
         file_open(argv[1]);
     term_enable_raw();
-    ui_set_message(
-        "Mazu Editor | ^Q Exit | ^S Save | ^F Search | "
-        "^Z Undo | ^R Redo | ^C Copy | ^X Cut | ^V Paste");
+    ui_set_message("Mazu Editor | ^? Help");
     editor_refresh();
 
     /* Main event loop */
