@@ -124,7 +124,7 @@ static inline const char *utf8_prev_char(const char *start, const char *s)
 }
 
 /* Forward declaration needed early for debugging */
-static void set_status_message(const char *msg, ...);
+static void ui_set_message(const char *msg, ...);
 
 /* Validate UTF-8 byte sequence and return its length
  * Returns 0 if invalid, otherwise returns number of bytes (1-4)
@@ -741,38 +741,38 @@ editor_syntax_t DB[] = {
 
 #define DB_ENTRIES (sizeof(DB) / sizeof(DB[0]))
 
-static char *prompt(const char *msg, void (*callback)(char *, int));
+static char *ui_prompt(const char *msg, void (*callback)(char *, int));
 
-static void clear_screen()
+static void term_clear()
 {
     write(STDOUT_FILENO, "\x1b[2J", 4);
 }
 
 static void panic(const char *s)
 {
-    clear_screen();
+    term_clear();
     perror(s);
     puts("\r\n");
     exit(1);
 }
 
-static void open_buffer()
+static void term_open_buffer()
 {
     if (write(STDOUT_FILENO, "\x1b[?47h", 6) == -1)
         panic("Error changing terminal buffer");
 }
 
-static void disable_raw_mode()
+static void term_disable_raw()
 {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &ec.orig_termios) == -1)
         panic("Failed to disable raw mode");
 }
 
-static void enable_raw_mode()
+static void term_enable_raw()
 {
     if (tcgetattr(STDIN_FILENO, &ec.orig_termios) == -1)
         panic("Failed to get current terminal state");
-    atexit(disable_raw_mode);
+    atexit(term_disable_raw);
     struct termios raw = ec.orig_termios;
     raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
     raw.c_oflag &= ~(OPOST);
@@ -780,12 +780,12 @@ static void enable_raw_mode()
     raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
     raw.c_cc[VMIN] = 0;
     raw.c_cc[VTIME] = 1;
-    open_buffer();
+    term_open_buffer();
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1)
         panic("Failed to set raw mode");
 }
 
-static int read_key()
+static int term_read_key()
 {
     int nread;
     char c;
@@ -847,7 +847,7 @@ static int read_key()
     return c;
 }
 
-static int get_window_size(int *screen_rows, int *screen_cols)
+static int term_get_size(int *screen_rows, int *screen_cols)
 {
     struct winsize ws;
     if ((ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) || (ws.ws_col == 0))
@@ -857,27 +857,27 @@ static int get_window_size(int *screen_rows, int *screen_cols)
     return 0;
 }
 
-static void update_window_size()
+static void term_update_size()
 {
-    if (get_window_size(&ec.screen_rows, &ec.screen_cols) == -1)
+    if (term_get_size(&ec.screen_rows, &ec.screen_cols) == -1)
         panic("Failed to get window size");
     ec.screen_rows -= 2;
 }
 
-static void close_buffer()
+static void term_close_buffer()
 {
     if (write(STDOUT_FILENO, "\x1b[?9l", 5) == -1 ||
         write(STDOUT_FILENO, "\x1b[?47l", 6) == -1)
         panic("Error restoring buffer state");
-    clear_screen();
+    term_clear();
 }
 
-static bool is_token_separator(int c)
+static bool syntax_is_separator(int c)
 {
     return isspace(c) || !c || strchr(",.()+-/*=~%<>[]:;", c);
 }
 
-static bool is_part_of_number(int c)
+static bool syntax_is_number_part(int c)
 {
     return c == '.' || c == 'x' || c == 'a' || c == 'b' || c == 'c' ||
            c == 'd' || c == 'e' || c == 'f' || c == 'A' || c == 'X' ||
@@ -885,7 +885,7 @@ static bool is_part_of_number(int c)
            c == 'h' || c == 'H';
 }
 
-static void highlight(editor_row_t *row)
+static void syntax_highlight(editor_row_t *row)
 {
     row->highlight = realloc(row->highlight, row->render_size);
     memset(row->highlight, NORMAL, row->render_size);
@@ -955,7 +955,7 @@ static void highlight(editor_row_t *row)
         }
         if (ec.syntax->flags & HIGHLIGHT_NUMBERS) {
             if ((isdigit(c) && (prev_sep || (prev_highlight == NUMBER))) ||
-                (is_part_of_number(c) && (prev_highlight == NUMBER))) {
+                (syntax_is_number_part(c) && (prev_highlight == NUMBER))) {
                 row->highlight[i] = NUMBER;
                 i++;
                 prev_sep = false;
@@ -972,7 +972,7 @@ static void highlight(editor_row_t *row)
                 if (kw_2)
                     kw_len--;
                 if (!strncmp(&row->render[i], keywords[j], kw_len) &&
-                    is_token_separator(row->render[i + kw_len])) {
+                    syntax_is_separator(row->render[i + kw_len])) {
                     memset(&row->highlight[i],
                            kw_2 ? KEYWORD_2 : (kw_3 ? KEYWORD_3 : KEYWORD_1),
                            kw_len);
@@ -985,17 +985,17 @@ static void highlight(editor_row_t *row)
                 continue;
             }
         }
-        prev_sep = is_token_separator(c);
+        prev_sep = syntax_is_separator(c);
         i++;
     }
     bool changed = (row->hl_open_comment != in_comment);
     row->hl_open_comment = in_comment;
     if (changed && row->idx + 1 < ec.num_rows)
-        highlight(&ec.row[row->idx + 1]);
+        syntax_highlight(&ec.row[row->idx + 1]);
 }
 
 /* Reference: https://misc.flogisoft.com/bash/tip_colors_and_formatting */
-static int token_to_color(int highlight)
+static int syntax_token_color(int highlight)
 {
     switch (highlight) {
     case SL_COMMENT:
@@ -1018,7 +1018,7 @@ static int token_to_color(int highlight)
     }
 }
 
-static void select_highlight()
+static void syntax_select()
 {
     ec.syntax = NULL;
     if (!ec.file_name)
@@ -1033,7 +1033,7 @@ static void select_highlight()
             if ((es->file_match[i][0] != '.') || (p[pat_len] == '\0')) {
                 ec.syntax = es;
                 for (int file_row = 0; file_row < ec.num_rows; file_row++)
-                    highlight(&ec.row[file_row]);
+                    syntax_highlight(&ec.row[file_row]);
                 return;
             }
         }
@@ -1088,7 +1088,7 @@ static int row_renderx_to_cursorx(editor_row_t *row, int render_x)
     return byte_pos;
 }
 
-static void update_row(editor_row_t *row)
+static void row_update(editor_row_t *row)
 {
     int tabs = 0;
     int wide_chars = 0;
@@ -1132,10 +1132,10 @@ static void update_row(editor_row_t *row)
     }
     row->render[idx] = '\0';
     row->render_size = idx;
-    highlight(row);
+    syntax_highlight(row);
 }
 
-static void insert_row(int at, char *s, size_t line_len)
+static void row_insert(int at, char *s, size_t line_len)
 {
     if ((at < 0) || (at > ec.num_rows))
         return;
@@ -1153,12 +1153,12 @@ static void insert_row(int at, char *s, size_t line_len)
     ec.row[at].render = NULL;
     ec.row[at].highlight = NULL;
     ec.row[at].hl_open_comment = false;
-    update_row(&ec.row[at]);
+    row_update(&ec.row[at]);
     ec.num_rows++;
     ec.modified++;
 }
 
-static void copy(int cut)
+static void editor_copy(int cut)
 {
     if (!ec.gb || ec.cursor_y >= ec.num_rows)
         return;
@@ -1166,19 +1166,19 @@ static void copy(int cut)
     size_t len = strlen(ec.row[ec.cursor_y].chars) + 1;
     ec.copied_char_buffer = realloc(ec.copied_char_buffer, len);
     if (!ec.copied_char_buffer) {
-        set_status_message("Memory allocation failed");
+        ui_set_message("Memory allocation failed");
         return;
     }
     snprintf(ec.copied_char_buffer, len, "%s", ec.row[ec.cursor_y].chars);
-    set_status_message(cut ? "Text cut" : "Text copied");
+    ui_set_message(cut ? "Text cut" : "Text copied");
 }
 
-static void cut()
+static void editor_cut()
 {
     if (!ec.gb || ec.cursor_y >= ec.num_rows)
         return;
 
-    copy(-1);
+    editor_copy(-1);
 
     /* Calculate line position in gap buffer */
     size_t line_start = 0;
@@ -1212,7 +1212,7 @@ static void cut()
         ec.row[0].render = NULL;
         ec.row[0].render_size = 0;
         ec.row[0].highlight = NULL;
-        update_row(&ec.row[0]);
+        row_update(&ec.row[0]);
     }
 
     /* Adjust cursor */
@@ -1222,7 +1222,7 @@ static void cut()
     ec.modified = true;
 }
 
-static void paste()
+static void editor_paste()
 {
     if (!ec.copied_char_buffer || !ec.gb)
         return;
@@ -1239,20 +1239,20 @@ static void paste()
                             paste_len)) {
         /* Update row directly */
         if (ec.cursor_y == ec.num_rows)
-            insert_row(ec.num_rows, "", 0);
+            row_insert(ec.num_rows, "", 0);
         editor_row_t *row = &ec.row[ec.cursor_y];
         row->chars = realloc(row->chars, row->size + paste_len + 1);
         memmove(&row->chars[ec.cursor_x + paste_len], &row->chars[ec.cursor_x],
                 row->size - ec.cursor_x + 1);
         memcpy(&row->chars[ec.cursor_x], ec.copied_char_buffer, paste_len);
         row->size += paste_len;
-        update_row(row);
+        row_update(row);
         ec.cursor_x += paste_len;
         ec.modified = true;
     }
 }
 
-static void newline()
+static void editor_newline()
 {
     if (!ec.gb)
         return;
@@ -1268,15 +1268,15 @@ static void newline()
     if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, &nl, 1)) {
         /* Update row structure directly */
         if (ec.cursor_x == 0) {
-            insert_row(ec.cursor_y, "", 0);
+            row_insert(ec.cursor_y, "", 0);
         } else {
             editor_row_t *row = &ec.row[ec.cursor_y];
-            insert_row(ec.cursor_y + 1, &row->chars[ec.cursor_x],
+            row_insert(ec.cursor_y + 1, &row->chars[ec.cursor_x],
                        row->size - ec.cursor_x);
             row = &ec.row[ec.cursor_y];
             row->size = ec.cursor_x;
             row->chars[row->size] = '\0';
-            update_row(row);
+            row_update(row);
         }
         ec.cursor_y++;
         ec.cursor_x = 0;
@@ -1320,7 +1320,7 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
             for (size_t i = 0; i < line_len; i++)
                 line[i] = gb_get_char(gb, line_start + i);
             line[line_len] = '\0';
-            insert_row(ec.num_rows, line, line_len);
+            row_insert(ec.num_rows, line, line_len);
             free(line);
         }
 
@@ -1330,7 +1330,7 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
 
     /* Ensure at least one row */
     if (!ec.num_rows)
-        insert_row(0, "", 0);
+        row_insert(0, "", 0);
 
     /* Update modified flag from gap buffer */
     ec.modified = gb->modified;
@@ -1350,7 +1350,7 @@ static struct {
     int expected;
 } utf8_buffer = {.len = 0, .expected = 0};
 
-static void insert_char(int c)
+static void editor_insert_char(int c)
 {
     if (!ec.gb)
         return;
@@ -1395,7 +1395,7 @@ static void insert_char(int c)
                             utf8_buffer.len)) {
         /* Update current row directly */
         if (ec.cursor_y == ec.num_rows)
-            insert_row(ec.num_rows, "", 0);
+            row_insert(ec.num_rows, "", 0);
 
         editor_row_t *row = &ec.row[ec.cursor_y];
         row->chars = realloc(row->chars, row->size + utf8_buffer.len + 1);
@@ -1403,7 +1403,7 @@ static void insert_char(int c)
                 &row->chars[ec.cursor_x], row->size - ec.cursor_x + 1);
         memcpy(&row->chars[ec.cursor_x], utf8_buffer.bytes, utf8_buffer.len);
         row->size += utf8_buffer.len;
-        update_row(row);
+        row_update(row);
         ec.cursor_x += utf8_buffer.len;
         ec.modified = true;
     }
@@ -1413,7 +1413,7 @@ static void insert_char(int c)
     utf8_buffer.expected = 0;
 }
 
-static void delete_char()
+static void editor_delete_char()
 {
     if (!ec.gb)
         return;
@@ -1440,7 +1440,7 @@ static void delete_char()
         memmove(&row->chars[prev_pos], &row->chars[ec.cursor_x],
                 row->size - ec.cursor_x + 1);
         row->size -= char_len;
-        update_row(row);
+        row_update(row);
         ec.cursor_x = prev_pos;
         ec.modified = true;
     } else {
@@ -1457,7 +1457,7 @@ static void delete_char()
             memcpy(&prev_row->chars[prev_row->size], row->chars, row->size);
             prev_row->size += row->size;
             prev_row->chars[prev_row->size] = '\0';
-            update_row(prev_row);
+            row_update(prev_row);
 
             /* Remove current row */
             free(row->render);
@@ -1474,7 +1474,7 @@ static void delete_char()
     }
 }
 
-static char *rows_tostring(int *buf_len)
+static char *file_rows_to_string(int *buf_len)
 {
     int total_len = 0;
     for (int j = 0; j < ec.num_rows; j++)
@@ -1489,11 +1489,11 @@ static char *rows_tostring(int *buf_len)
     return buf;
 }
 
-static void open_file(char *file_name)
+static void file_open(char *file_name)
 {
     free(ec.file_name);
     ec.file_name = strdup(file_name);
-    select_highlight();
+    syntax_select();
     FILE *file = fopen(file_name, "r+");
     if (!file)
         panic("Failed to open the file");
@@ -1515,25 +1515,25 @@ static void open_file(char *file_name)
         if (line_len > 0 &&
             (line[line_len - 1] == '\n' || line[line_len - 1] == '\r'))
             line_len--;
-        insert_row(ec.num_rows, line, line_len);
+        row_insert(ec.num_rows, line, line_len);
     }
     free(line);
     fclose(file);
     ec.modified = false;
 }
 
-static void save_file()
+static void file_save()
 {
     if (!ec.file_name) {
-        ec.file_name = prompt("Save as: %s (ESC to cancel)", NULL);
+        ec.file_name = ui_prompt("Save as: %s (ESC to cancel)", NULL);
         if (!ec.file_name) {
-            set_status_message("Save aborted");
+            ui_set_message("Save aborted");
             return;
         }
-        select_highlight();
+        syntax_select();
     }
     int len;
-    char *buf = rows_tostring(&len);
+    char *buf = file_rows_to_string(&len);
     int fd = open(ec.file_name, O_RDWR | O_CREAT, 0644);
     if (fd != -1) {
         if ((ftruncate(fd, len) != -1) && (write(fd, buf, len) == len)) {
@@ -1541,15 +1541,15 @@ static void save_file()
             free(buf);
             ec.modified = false;
             if (len >= 1024)
-                set_status_message("%d KiB written to disk", len >> 10);
+                ui_set_message("%d KiB written to disk", len >> 10);
             else
-                set_status_message("%d B written to disk", len);
+                ui_set_message("%d B written to disk", len);
             return;
         }
         close(fd);
     }
     free(buf);
-    set_status_message("Error: %s", strerror(errno));
+    ui_set_message("Error: %s", strerror(errno));
 }
 
 /* Global variables for search state - needed for prompt display */
@@ -1557,7 +1557,7 @@ static int search_last_match = -1;
 static int search_total_matches = 0;
 static int search_current_match = 0;
 
-static void search_cb(char *query, int key)
+static void search_callback(char *query, int key)
 {
     static int direction = 1;
     static int saved_highlight_line;
@@ -1631,7 +1631,7 @@ static void search_cb(char *query, int key)
     }
 }
 
-static void search()
+static void search_find()
 {
     int saved_x = ec.cursor_x, saved_y = ec.cursor_y;
     int saved_col = ec.col_offset, saved_row = ec.row_offset;
@@ -1641,7 +1641,7 @@ static void search()
     search_total_matches = 0;
     search_current_match = 0;
 
-    char *query = prompt("Search", search_cb);
+    char *query = ui_prompt("Search", search_callback);
     if (query)
         free(query);
     else {
@@ -1667,7 +1667,7 @@ static void buf_free(editor_buf_t *eb)
     free(eb->buf);
 }
 
-static void scroll()
+static void editor_scroll()
 {
     ec.render_x = 0;
     if (ec.cursor_y < ec.num_rows)
@@ -1682,7 +1682,7 @@ static void scroll()
         ec.col_offset = ec.render_x - ec.screen_cols + 1;
 }
 
-static void draw_statusbar(editor_buf_t *eb)
+static void ui_draw_statusbar(editor_buf_t *eb)
 {
     buf_append(eb, "\x1b[100m", 6); /* Dark gray */
     char status[80], r_status[80];
@@ -1726,7 +1726,7 @@ static void draw_statusbar(editor_buf_t *eb)
     buf_append(eb, "\r\n", 2);
 }
 
-static void draw_messagebar(editor_buf_t *eb)
+static void ui_draw_messagebar(editor_buf_t *eb)
 {
     buf_append(eb, "\x1b[93m\x1b[44m\x1b[K", 13);
     int msg_len = strlen(ec.status_msg);
@@ -1750,7 +1750,7 @@ static void draw_messagebar(editor_buf_t *eb)
     buf_append(eb, "\x1b[0m", 4);
 }
 
-static void set_status_message(const char *msg, ...)
+static void ui_set_message(const char *msg, ...)
 {
     va_list args;
     va_start(args, msg);
@@ -1759,7 +1759,7 @@ static void set_status_message(const char *msg, ...)
     ec.status_msg_time = time(NULL);
 }
 
-static void draw_rows(editor_buf_t *eb)
+static void ui_draw_rows(editor_buf_t *eb)
 {
     for (int y = 0; y < ec.screen_rows; y++) {
         int file_row = y + ec.row_offset;
@@ -1793,7 +1793,7 @@ static void draw_rows(editor_buf_t *eb)
                     }
                     buf_append(eb, &c[j], 1);
                 } else {
-                    int color = token_to_color(hl[j]);
+                    int color = syntax_token_color(hl[j]);
                     if (hl[j] == MATCH) {
                         /* Use inverse video for search matches */
                         buf_append(eb, "\x1b[7m", 4);
@@ -1824,15 +1824,15 @@ static void draw_rows(editor_buf_t *eb)
     }
 }
 
-static void refresh_screen()
+static void editor_refresh()
 {
-    scroll();
+    editor_scroll();
     editor_buf_t eb = {NULL, 0};
     buf_append(&eb, "\x1b[?25l", 6);
     buf_append(&eb, "\x1b[H", 3);
-    draw_rows(&eb);
-    draw_statusbar(&eb);
-    draw_messagebar(&eb);
+    ui_draw_rows(&eb);
+    ui_draw_statusbar(&eb);
+    ui_draw_messagebar(&eb);
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (ec.cursor_y - ec.row_offset) + 1,
              (ec.render_x - ec.col_offset) + 1);
@@ -1842,25 +1842,25 @@ static void refresh_screen()
     buf_free(&eb);
 }
 
-static void handle_sigwinch()
+static void sig_winch_handler()
 {
-    update_window_size();
+    term_update_size();
     if (ec.cursor_y > ec.screen_rows)
         ec.cursor_y = ec.screen_rows - 1;
     if (ec.cursor_x > ec.screen_cols)
         ec.cursor_x = ec.screen_cols - 1;
-    refresh_screen();
+    editor_refresh();
 }
 
-static void handle_sigcont()
+static void sig_cont_handler()
 {
-    disable_raw_mode();
-    open_buffer();
-    enable_raw_mode();
-    refresh_screen();
+    term_disable_raw();
+    term_open_buffer();
+    term_enable_raw();
+    editor_refresh();
 }
 
-static bool confirm_dialog(const char *msg)
+static bool ui_confirm(const char *msg)
 {
     bool choice = false; /* false = No (default), true = Yes */
 
@@ -1875,17 +1875,17 @@ static bool confirm_dialog(const char *msg)
                      "%s   No   \x1b[7m[ Yes ]\x1b[m  (ESC: cancel)", msg);
         }
 
-        set_status_message("%s", status_msg);
-        refresh_screen();
+        ui_set_message("%s", status_msg);
+        editor_refresh();
 
-        int c = read_key();
+        int c = term_read_key();
         switch (c) {
         case '\r': /* Enter key */
-            set_status_message("");
+            ui_set_message("");
             return choice;
         case '\x1b': /* ESC key */
         case CTRL_('q'):
-            set_status_message("");
+            ui_set_message("");
             return false; /* Cancel = No */
         case ARROW_LEFT:
         case ARROW_RIGHT:
@@ -1903,7 +1903,7 @@ static bool confirm_dialog(const char *msg)
     }
 }
 
-static char *prompt(const char *msg, void (*callback)(char *, int))
+static char *ui_prompt(const char *msg, void (*callback)(char *, int))
 {
     size_t buf_size = 128;
     char *buf = malloc(buf_size);
@@ -1913,7 +1913,7 @@ static char *prompt(const char *msg, void (*callback)(char *, int))
     buf[0] = '\0';
 
     /* Check if this is a search prompt */
-    bool is_search = (callback == search_cb);
+    bool is_search = (callback == search_callback);
 
     while (1) {
         /* Special formatting for search prompt */
@@ -1934,27 +1934,27 @@ static char *prompt(const char *msg, void (*callback)(char *, int))
                     buf);
             }
 
-            set_status_message("%s", display_msg);
+            ui_set_message("%s", display_msg);
         } else {
             /* For non-search prompts, use the format string */
             char formatted_msg[256];
             snprintf(formatted_msg, sizeof(formatted_msg), msg, buf);
-            set_status_message("%s", formatted_msg);
+            ui_set_message("%s", formatted_msg);
         }
-        refresh_screen();
-        int c = read_key();
+        editor_refresh();
+        int c = term_read_key();
         if ((c == DEL_KEY) || (c == CTRL_('h')) || (c == BACKSPACE)) {
             if (buf_len != 0)
                 buf[--buf_len] = '\0';
         } else if (c == '\x1b') {
-            set_status_message("");
+            ui_set_message("");
             if (callback)
                 callback(buf, c);
             free(buf);
             return NULL;
         } else if (c == '\r') {
             if (buf_len != 0) {
-                set_status_message("");
+                ui_set_message("");
                 if (callback)
                     callback(buf, c);
                 return buf;
@@ -1978,7 +1978,7 @@ static char *prompt(const char *msg, void (*callback)(char *, int))
     }
 }
 
-static void move_cursor(int key)
+static void editor_move_cursor(int key)
 {
     editor_row_t *row =
         (ec.cursor_y >= ec.num_rows) ? NULL : &ec.row[ec.cursor_y];
@@ -2025,50 +2025,50 @@ static void move_cursor(int key)
         ec.cursor_x = row_len;
 }
 
-static void process_key()
+static void editor_process_key()
 {
     static int indent_level = 0;
-    int c = read_key();
+    int c = term_read_key();
     switch (c) {
     case '\r':
-        newline();
+        editor_newline();
         for (int i = 0; i < indent_level; i++)
-            insert_char('\t');
+            editor_insert_char('\t');
         break;
     case CTRL_('q'):
         if (ec.modified) {
-            if (!confirm_dialog("File has been modified. Quit without saving?"))
+            if (!ui_confirm("File has been modified. Quit without saving?"))
                 return;
         }
-        clear_screen();
-        close_buffer();
+        term_clear();
+        term_close_buffer();
         exit(0);
         break;
     case CTRL_('s'):
-        save_file();
+        file_save();
         break;
     case CTRL_('x'):
         if (ec.cursor_y < ec.num_rows)
-            cut();
+            editor_cut();
         break;
     case CTRL_('c'):
         if (ec.cursor_y < ec.num_rows)
-            copy(0);
+            editor_copy(0);
         break;
     case CTRL_('v'):
-        paste();
+        editor_paste();
         break;
     case CTRL_('z'):
         /* Undo last operation */
         if (ec.gb && ec.undo_stack) {
             if (undo_perform(ec.gb, ec.undo_stack)) {
                 ec.modified = ec.gb->modified;
-                set_status_message("Undo performed");
+                ui_set_message("Undo performed");
             } else {
-                set_status_message("Nothing to undo");
+                ui_set_message("Nothing to undo");
             }
         } else {
-            set_status_message("Undo system not initialized");
+            ui_set_message("Undo system not initialized");
         }
         break;
     case CTRL_('r'):
@@ -2076,19 +2076,19 @@ static void process_key()
         if (ec.gb && ec.undo_stack) {
             if (undo_redo(ec.gb, ec.undo_stack)) {
                 ec.modified = ec.gb->modified;
-                set_status_message("Redo performed");
+                ui_set_message("Redo performed");
             } else {
-                set_status_message("Nothing to redo");
+                ui_set_message("Nothing to redo");
             }
         } else {
-            set_status_message("Undo system not initialized");
+            ui_set_message("Undo system not initialized");
         }
         break;
     case ARROW_UP:
     case ARROW_DOWN:
     case ARROW_LEFT:
     case ARROW_RIGHT:
-        move_cursor(c);
+        editor_move_cursor(c);
         break;
     case PAGE_UP:
     case PAGE_DOWN: {
@@ -2098,7 +2098,7 @@ static void process_key()
             ec.cursor_y = ec.row_offset + ec.screen_rows - 1;
         int times = ec.screen_rows;
         while (times--)
-            move_cursor((c == PAGE_UP) ? ARROW_UP : ARROW_DOWN);
+            editor_move_cursor((c == PAGE_UP) ? ARROW_UP : ARROW_DOWN);
     } break;
     case HOME_KEY:
         ec.cursor_x = 0;
@@ -2108,20 +2108,20 @@ static void process_key()
             ec.cursor_x = ec.row[ec.cursor_y].size;
         break;
     case CTRL_('f'):
-        search();
+        search_find();
         break;
     case BACKSPACE:
     case CTRL_('h'):
     case DEL_KEY:
         if (c == DEL_KEY)
-            move_cursor(ARROW_RIGHT);
-        delete_char();
+            editor_move_cursor(ARROW_RIGHT);
+        editor_delete_char();
         break;
     case CTRL_('l'):
     case '\x1b':
         break;
     case '{':
-        insert_char(c);
+        editor_insert_char(c);
         indent_level++;
         break;
     case '}':
@@ -2131,18 +2131,18 @@ static void process_key()
             goto none;
         editor_row_t *row = &ec.row[ec.cursor_y];
         if ((ec.cursor_x > 0) && (row->chars[ec.cursor_x - 1] == '\t'))
-            delete_char();
+            editor_delete_char();
     none:
-        insert_char(c);
+        editor_insert_char(c);
         indent_level--;
         break;
     default:
-        insert_char(c);
+        editor_insert_char(c);
     }
 }
 
 #if ENABLE_TIMER
-static bool check_timer_update(void)
+static bool timer_check_update(void)
 {
     time_t current_time = time(NULL);
     if (current_time != ec.last_update_time) {
@@ -2153,11 +2153,11 @@ static bool check_timer_update(void)
 }
 #endif
 
-static void init_editor()
+static void editor_init()
 {
-    update_window_size();
-    signal(SIGWINCH, handle_sigwinch);
-    signal(SIGCONT, handle_sigcont);
+    term_update_size();
+    signal(SIGWINCH, sig_winch_handler);
+    signal(SIGCONT, sig_cont_handler);
 
     /* Initialize gap buffer and undo/redo - always enabled */
     ec.gb = gb_init(GB_INITIAL_SIZE);
@@ -2172,21 +2172,21 @@ static void init_editor()
 
 int main(int argc, char *argv[])
 {
-    init_editor();
+    editor_init();
     if (argc >= 2)
-        open_file(argv[1]);
-    enable_raw_mode();
-    set_status_message(
+        file_open(argv[1]);
+    term_enable_raw();
+    ui_set_message(
         "Mazu Editor | ^Q Exit | ^S Save | ^F Search | "
         "^Z Undo | ^R Redo | ^C Copy | ^X Cut | ^V Paste");
-    refresh_screen();
+    editor_refresh();
 
     /* Main event loop */
     while (1) {
 #if ENABLE_TIMER
         /* Check if timer needs refresh */
-        if (check_timer_update())
-            refresh_screen();
+        if (timer_check_update())
+            editor_refresh();
 
         /* Use poll for non-blocking keyboard input */
         struct pollfd fds[1];
@@ -2197,13 +2197,13 @@ int main(int argc, char *argv[])
         int ret = poll(fds, 1, 100);
 
         if (ret > 0 && (fds[0].revents & POLLIN)) {
-            process_key();
-            refresh_screen();
+            editor_process_key();
+            editor_refresh();
         }
 #else
         /* Simple blocking read when timer is disabled */
-        process_key();
-        refresh_screen();
+        editor_process_key();
+        editor_refresh();
 #endif
     }
     /* not reachable */
