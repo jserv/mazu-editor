@@ -390,14 +390,14 @@ typedef struct {
     UndoNode *tail;    /* Last undo node */
     int max_undos;     /* Maximum number of undo levels */
     int count;         /* Current number of undo nodes */
-} UndoStack;
+} undo_stack_t;
 
 #define MAX_UNDO_LEVELS 100
 
 /* Initialize undo stack */
-static UndoStack *undo_init(int max_levels)
+static undo_stack_t *undo_init(int max_levels)
 {
-    UndoStack *stack = malloc(sizeof(UndoStack));
+    undo_stack_t *stack = malloc(sizeof(undo_stack_t));
     if (!stack)
         return NULL;
 
@@ -420,7 +420,7 @@ static void undo_free_node(UndoNode *node)
 }
 
 /* Clear redo history (called when new edit is made) */
-static void undo_clear_redo(UndoStack *stack)
+static void undo_clear_redo(undo_stack_t *stack)
 {
     if (!stack || !stack->current)
         return;
@@ -441,7 +441,7 @@ static void undo_clear_redo(UndoStack *stack)
 }
 
 /* Add a new undo operation */
-static void undo_push(UndoStack *stack,
+static void undo_push(undo_stack_t *stack,
                       UndoType type,
                       size_t pos,
                       const char *text,
@@ -498,7 +498,7 @@ static void undo_push(UndoStack *stack,
 static void gb_sync_to_rows(gap_buffer_t *gb);
 
 /* Perform undo operation */
-static bool undo_perform(gap_buffer_t *gb, UndoStack *stack)
+static bool undo_perform(gap_buffer_t *gb, undo_stack_t *stack)
 {
     if (!gb || !stack || !stack->current)
         return false; /* Nothing to undo */
@@ -539,7 +539,7 @@ static bool undo_perform(gap_buffer_t *gb, UndoStack *stack)
 }
 
 /* Perform redo operation */
-static bool undo_redo(gap_buffer_t *gb, UndoStack *stack)
+static bool undo_redo(gap_buffer_t *gb, undo_stack_t *stack)
 {
     if (!gb || !stack)
         return false;
@@ -585,7 +585,7 @@ static bool undo_redo(gap_buffer_t *gb, UndoStack *stack)
 
 /* Track insertion for undo (wrapper for gb_insert) */
 static bool gb_insert_with_undo(gap_buffer_t *gb,
-                                UndoStack *undo,
+                                undo_stack_t *undo,
                                 size_t pos,
                                 const char *text,
                                 size_t len)
@@ -601,7 +601,7 @@ static bool gb_insert_with_undo(gap_buffer_t *gb,
 
 /* Track deletion for undo (wrapper for gb_delete) */
 static void gb_delete_with_undo(gap_buffer_t *gb,
-                                UndoStack *undo,
+                                undo_stack_t *undo,
                                 size_t pos,
                                 size_t len)
 {
@@ -661,9 +661,8 @@ struct {
     editor_syntax *syntax;
     struct termios orig_termios;
     /* Gap buffer and undo/redo support */
-    gap_buffer_t *gb;      /* Gap buffer */
-    UndoStack *undo_stack; /* Undo/redo stack */
-    size_t gb_cursor_pos;  /* Cursor position in gap buffer */
+    gap_buffer_t *gb;         /* Gap buffer */
+    undo_stack_t *undo_stack; /* Undo/redo stack */
 } ec = {
     /* editor config */
     .cursor_x = 0,         .cursor_y = 0,        .render_x = 0,
@@ -671,7 +670,6 @@ struct {
     .row = NULL,           .modified = 0,        .file_name = NULL,
     .status_msg[0] = '\0', .status_msg_time = 0, .copied_char_buffer = NULL,
     .syntax = NULL,        .gb = NULL,           .undo_stack = NULL,
-    .gb_cursor_pos = 0,
 };
 
 typedef struct {
@@ -1136,38 +1134,11 @@ static void insert_row(int at, char *s, size_t line_len)
     ec.modified++;
 }
 
-static void free_row(editor_row *row)
-{
-    free(row->render);
-    free(row->chars);
-    free(row->highlight);
-}
-
-static void delete_row(int at)
-{
-    if (at < 0 || at >= ec.num_rows)
-        return;
-    free_row(&ec.row[at]);
-    memmove(&ec.row[at], &ec.row[at + 1],
-            sizeof(editor_row) * (ec.num_rows - at - 1));
-    for (int j = at; j < ec.num_rows - 1; j++)
-        ec.row[j].idx--;
-    ec.num_rows--;
-    ec.modified++;
-}
-
-static void row_append(editor_row *row, char *s, size_t len)
-{
-    row->chars = realloc(row->chars, row->size + len + 1);
-    memcpy(&row->chars[row->size], s, len);
-    row->size += len;
-    row->chars[row->size] = '\0';
-    update_row(row);
-    ec.modified++;
-}
-
 static void copy(int cut)
 {
+    if (!ec.gb || ec.cursor_y >= ec.num_rows)
+        return;
+
     size_t len = strlen(ec.row[ec.cursor_y].chars) + 1;
     ec.copied_char_buffer = realloc(ec.copied_char_buffer, len);
     if (!ec.copied_char_buffer) {
@@ -1180,73 +1151,114 @@ static void copy(int cut)
 
 static void cut()
 {
+    if (!ec.gb || ec.cursor_y >= ec.num_rows)
+        return;
+
     copy(-1);
-    delete_row(ec.cursor_y);
-    if (ec.num_rows - ec.cursor_y > 0)
-        highlight(&ec.row[ec.cursor_y]);
-    if (ec.num_rows - ec.cursor_y > 1)
-        highlight(&ec.row[ec.cursor_y + 1]);
-    ec.cursor_x = ec.cursor_y == ec.num_rows ? 0 : ec.row[ec.cursor_y].size;
+
+    /* Calculate line position in gap buffer */
+    size_t line_start = 0;
+    for (int i = 0; i < ec.cursor_y; i++) {
+        line_start += ec.row[i].size + 1;
+    }
+
+    /* Delete entire line including newline */
+    size_t line_len = ec.row[ec.cursor_y].size;
+    if (ec.cursor_y < ec.num_rows - 1)
+        line_len++; /* Include newline */
+
+    gb_delete_with_undo(ec.gb, ec.undo_stack, line_start, line_len);
+
+    /* Remove row from display structure */
+    editor_row *row = &ec.row[ec.cursor_y];
+    free(row->render);
+    free(row->chars);
+    free(row->highlight);
+
+    if (ec.num_rows > 1) {
+        memmove(&ec.row[ec.cursor_y], &ec.row[ec.cursor_y + 1],
+                sizeof(editor_row) * (ec.num_rows - ec.cursor_y - 1));
+        for (int j = ec.cursor_y; j < ec.num_rows - 1; j++)
+            ec.row[j].idx--;
+        ec.num_rows--;
+    } else {
+        /* Last row - replace with empty row */
+        ec.row[0].size = 0;
+        ec.row[0].chars = malloc(1);
+        ec.row[0].chars[0] = '\0';
+        ec.row[0].render = NULL;
+        ec.row[0].render_size = 0;
+        ec.row[0].highlight = NULL;
+        update_row(&ec.row[0]);
+    }
+
+    /* Adjust cursor */
+    if (ec.cursor_y >= ec.num_rows && ec.num_rows > 0)
+        ec.cursor_y = ec.num_rows - 1;
+    ec.cursor_x = 0;
+    ec.modified = 1;
 }
 
 static void paste()
 {
-    if (!ec.copied_char_buffer)
+    if (!ec.copied_char_buffer || !ec.gb)
         return;
-    if (ec.cursor_y == ec.num_rows)
-        insert_row(ec.cursor_y, ec.copied_char_buffer,
-                   strlen(ec.copied_char_buffer));
-    else
-        row_append(&ec.row[ec.cursor_y], ec.copied_char_buffer,
-                   strlen(ec.copied_char_buffer));
-    ec.cursor_x += strlen(ec.copied_char_buffer);
-}
 
-static void row_insert_char(editor_row *row, int at, int c)
-{
-    if ((at < 0) || (at > row->size))
-        at = row->size;
-    row->chars = realloc(row->chars, row->size + 2);
-    memmove(&row->chars[at + 1], &row->chars[at], row->size - at + 1);
-    row->size++;
-    row->chars[at] = c;
-    update_row(row);
-    ec.modified++;
+    /* Calculate position in gap buffer */
+    size_t pos = 0;
+    for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++)
+        pos += ec.row[i].size + 1;
+    pos += ec.cursor_x;
+
+    /* Insert the copied text */
+    size_t paste_len = strlen(ec.copied_char_buffer);
+    if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, ec.copied_char_buffer,
+                            paste_len)) {
+        /* Update row directly */
+        if (ec.cursor_y == ec.num_rows)
+            insert_row(ec.num_rows, "", 0);
+        editor_row *row = &ec.row[ec.cursor_y];
+        row->chars = realloc(row->chars, row->size + paste_len + 1);
+        memmove(&row->chars[ec.cursor_x + paste_len], &row->chars[ec.cursor_x],
+                row->size - ec.cursor_x + 1);
+        memcpy(&row->chars[ec.cursor_x], ec.copied_char_buffer, paste_len);
+        row->size += paste_len;
+        update_row(row);
+        ec.cursor_x += paste_len;
+        ec.modified = 1;
+    }
 }
 
 static void newline()
 {
-    /* Track newline in gap buffer for undo */
-    if (ec.gb && ec.undo_stack) {
-        /* Calculate position in gap buffer */
-        size_t pos = 0;
-        for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
-            pos += ec.row[i].size + 1; /* +1 for newline */
-        }
-        pos += ec.cursor_x;
+    if (!ec.gb)
+        return;
 
-        /* Insert newline character into gap buffer */
-        char nl = '\n';
-        if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, &nl, 1)) {
-            ec.gb_cursor_pos = pos + 1;
-        }
-    }
+    /* Calculate position in gap buffer */
+    size_t pos = 0;
+    for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++)
+        pos += ec.row[i].size + 1; /* +1 for newline */
+    pos += ec.cursor_x;
 
-    /* Update row structure for display */
-    if (ec.cursor_x == 0)
-        insert_row(ec.cursor_y, "", 0);
-    else {
-        editor_row *row = &ec.row[ec.cursor_y];
-        insert_row(ec.cursor_y + 1, &row->chars[ec.cursor_x],
-                   row->size - ec.cursor_x);
-        row = &ec.row[ec.cursor_y];
-        row->size = ec.cursor_x;
-        row->chars[row->size] = '\0';
-        update_row(row);
+    /* Insert newline character into gap buffer */
+    char nl = '\n';
+    if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, &nl, 1)) {
+        /* Update row structure directly */
+        if (ec.cursor_x == 0) {
+            insert_row(ec.cursor_y, "", 0);
+        } else {
+            editor_row *row = &ec.row[ec.cursor_y];
+            insert_row(ec.cursor_y + 1, &row->chars[ec.cursor_x],
+                       row->size - ec.cursor_x);
+            row = &ec.row[ec.cursor_y];
+            row->size = ec.cursor_x;
+            row->chars[row->size] = '\0';
+            update_row(row);
+        }
+        ec.cursor_y++;
+        ec.cursor_x = 0;
+        ec.modified = 1;
     }
-    ec.cursor_y++;
-    ec.cursor_x = 0;
-    ec.modified++;
 }
 
 /* Convert gap buffer back to rows for display */
@@ -1322,51 +1334,80 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
     }
 }
 
-static void row_delete_char(editor_row *row, int at)
-{
-    if ((at < 0) || (at >= row->size))
-        return;
-
-    // Find the byte length of the character at this position
-    int char_len = utf8_byte_length((uint8_t) row->chars[at]);
-
-    // Delete the entire UTF-8 sequence
-    memmove(&row->chars[at], &row->chars[at + char_len],
-            row->size - at - char_len + 1);
-    row->size -= char_len;
-    update_row(row);
-    ec.modified++;
-}
+/* Buffer for accumulating UTF-8 bytes */
+static struct {
+    char bytes[4];
+    int len;
+    int expected;
+} utf8_buffer = {.len = 0, .expected = 0};
 
 static void insert_char(int c)
 {
-    if (ec.gb && ec.undo_stack) {
-        /* Use gap buffer with undo tracking */
-        char ch = c;
-        size_t pos = ec.gb_cursor_pos;
+    if (!ec.gb)
+        return;
 
-        /* For now, calculate position based on cursor */
-        pos = 0;
-        for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
-            pos += ec.row[i].size + 1; /* +1 for newline */
-        }
-        pos += ec.cursor_x;
+    unsigned char byte = (unsigned char) c;
 
-        if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, &ch, 1)) {
-            ec.gb_cursor_pos = pos + 1;
-            ec.modified = 1;
+    /* Check if this is the start of a UTF-8 sequence */
+    if (utf8_buffer.len == 0) {
+        if (byte <= 0x7F) {
+            /* ASCII - insert immediately */
+            utf8_buffer.expected = 1;
+        } else if ((byte & 0xE0) == 0xC0) {
+            /* 2-byte UTF-8 */
+            utf8_buffer.expected = 2;
+        } else if ((byte & 0xF0) == 0xE0) {
+            /* 3-byte UTF-8 */
+            utf8_buffer.expected = 3;
+        } else if ((byte & 0xF8) == 0xF0) {
+            /* 4-byte UTF-8 */
+            utf8_buffer.expected = 4;
+        } else {
+            /* Invalid UTF-8 start byte */
+            return;
         }
     }
 
-    /* Always update row structure for immediate display */
-    if (ec.cursor_y == ec.num_rows)
-        insert_row(ec.num_rows, "", 0);
-    row_insert_char(&ec.row[ec.cursor_y], ec.cursor_x, c);
-    ec.cursor_x++;
+    /* Add byte to buffer */
+    utf8_buffer.bytes[utf8_buffer.len++] = c;
+
+    /* If we haven't collected all bytes yet, return */
+    if (utf8_buffer.len < utf8_buffer.expected)
+        return;
+
+    /* We have a complete character, insert it */
+    size_t pos = 0;
+    for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++)
+        pos += ec.row[i].size + 1;
+    pos += ec.cursor_x;
+
+    /* Insert the complete UTF-8 sequence as one undo operation */
+    if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, utf8_buffer.bytes,
+                            utf8_buffer.len)) {
+        /* Update current row directly */
+        if (ec.cursor_y == ec.num_rows)
+            insert_row(ec.num_rows, "", 0);
+
+        editor_row *row = &ec.row[ec.cursor_y];
+        row->chars = realloc(row->chars, row->size + utf8_buffer.len + 1);
+        memmove(&row->chars[ec.cursor_x + utf8_buffer.len],
+                &row->chars[ec.cursor_x], row->size - ec.cursor_x + 1);
+        memcpy(&row->chars[ec.cursor_x], utf8_buffer.bytes, utf8_buffer.len);
+        row->size += utf8_buffer.len;
+        update_row(row);
+        ec.cursor_x += utf8_buffer.len;
+        ec.modified = 1;
+    }
+
+    /* Reset UTF-8 buffer */
+    utf8_buffer.len = 0;
+    utf8_buffer.expected = 0;
 }
 
 static void delete_char()
 {
+    if (!ec.gb)
+        return;
     if (ec.cursor_y == ec.num_rows)
         return;
     if (ec.cursor_x == 0 && ec.cursor_y == 0)
@@ -1374,45 +1415,55 @@ static void delete_char()
 
     editor_row *row = &ec.row[ec.cursor_y];
 
-    if (ec.gb && ec.undo_stack) {
-        /* Use gap buffer with undo tracking */
-        size_t pos = 0;
-        for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
-            pos += ec.row[i].size + 1; /* +1 for newline */
-        }
-
-        if (ec.cursor_x > 0) {
-            /* Delete character before cursor */
-            const char *prev =
-                utf8_prev_char(row->chars, row->chars + ec.cursor_x);
-            int prev_pos = prev - row->chars;
-            int char_len = ec.cursor_x - prev_pos;
-
-            gb_delete_with_undo(ec.gb, ec.undo_stack, pos + prev_pos, char_len);
-            ec.gb_cursor_pos = pos + prev_pos;
-        } else {
-            /* Delete newline - join with previous line */
-            if (ec.cursor_y > 0) {
-                pos--; /* Point to previous line's newline */
-                gb_delete_with_undo(ec.gb, ec.undo_stack, pos, 1);
-                ec.gb_cursor_pos = pos;
-            }
-        }
-        ec.modified = 1;
+    /* Calculate position in gap buffer */
+    size_t pos = 0;
+    for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
+        pos += ec.row[i].size + 1; /* +1 for newline */
     }
 
-    /* Also update row structure for display */
     if (ec.cursor_x > 0) {
-        // Move cursor to previous character boundary before deleting
+        /* Delete character before cursor */
         const char *prev = utf8_prev_char(row->chars, row->chars + ec.cursor_x);
         int prev_pos = prev - row->chars;
-        row_delete_char(row, prev_pos);
+        int char_len = ec.cursor_x - prev_pos;
+
+        gb_delete_with_undo(ec.gb, ec.undo_stack, pos + prev_pos, char_len);
+
+        /* Update row directly */
+        memmove(&row->chars[prev_pos], &row->chars[ec.cursor_x],
+                row->size - ec.cursor_x + 1);
+        row->size -= char_len;
+        update_row(row);
         ec.cursor_x = prev_pos;
+        ec.modified = 1;
     } else {
-        ec.cursor_x = ec.row[ec.cursor_y - 1].size;
-        row_append(&ec.row[ec.cursor_y - 1], row->chars, row->size);
-        delete_row(ec.cursor_y);
-        ec.cursor_y--;
+        /* Delete newline - join with previous line */
+        if (ec.cursor_y > 0) {
+            pos--; /* Point to previous line's newline */
+            gb_delete_with_undo(ec.gb, ec.undo_stack, pos, 1);
+
+            /* Join lines in row structure */
+            ec.cursor_x = ec.row[ec.cursor_y - 1].size;
+            editor_row *prev_row = &ec.row[ec.cursor_y - 1];
+            prev_row->chars =
+                realloc(prev_row->chars, prev_row->size + row->size + 1);
+            memcpy(&prev_row->chars[prev_row->size], row->chars, row->size);
+            prev_row->size += row->size;
+            prev_row->chars[prev_row->size] = '\0';
+            update_row(prev_row);
+
+            /* Remove current row */
+            free(row->render);
+            free(row->chars);
+            free(row->highlight);
+            memmove(&ec.row[ec.cursor_y], &ec.row[ec.cursor_y + 1],
+                    sizeof(editor_row) * (ec.num_rows - ec.cursor_y - 1));
+            for (int j = ec.cursor_y; j < ec.num_rows - 1; j++)
+                ec.row[j].idx--;
+            ec.num_rows--;
+            ec.cursor_y--;
+            ec.modified = 1;
+        }
     }
 }
 
@@ -1515,7 +1566,8 @@ static void search_cb(char *query, int key)
         last_match = -1;
         direction = 1;
         return;
-    } else if ((key == ARROW_RIGHT) || (key == ARROW_DOWN))
+    }
+    if ((key == ARROW_RIGHT) || (key == ARROW_DOWN))
         direction = 1;
     else if ((key == ARROW_LEFT) || (key == ARROW_UP)) {
         if (last_match == -1)
@@ -1813,8 +1865,8 @@ static char *prompt(const char *msg, void (*callback)(char *, int))
         } else if (!iscntrl(c) && isprint(c)) {
             if (buf_len == buf_size - 1) {
                 buf_size *= 2;
-                char *new_buf = realloc(buf, buf_size);  // In case realloc
-                                                         // fails
+                /* In case realloc fails */
+                char *new_buf = realloc(buf, buf_size);
                 if (NULL == new_buf) {
                     free(buf);
                     return NULL;
@@ -1991,7 +2043,6 @@ static void process_key()
         insert_char(c);
     }
 }
-
 
 static void init_editor()
 {
