@@ -1,4 +1,6 @@
-// Mazu Editor: minimalist editor with syntax highlight, copy/paste, and search
+/* Mazu Editor:
+ * A minimalist editor with syntax highlight, copy/paste, undo, and search.
+ */
 
 #include <ctype.h>
 #include <errno.h>
@@ -21,7 +23,7 @@
 
 /* UTF-8 handling functions */
 
-// Get the byte length of a UTF-8 character from its first byte
+/* Get the byte length of a UTF-8 character from its first byte */
 static inline int utf8_byte_length(uint8_t c)
 {
     /* Quick check for ASCII */
@@ -39,16 +41,17 @@ static inline int utf8_byte_length(uint8_t c)
     return 1; /* Invalid UTF-8 start byte, treat as single byte */
 }
 
-// Check if byte is a UTF-8 continuation byte (10xxxxxx)
-static inline int is_utf8_continuation(uint8_t c)
+/* Check if byte is a UTF-8 continuation byte (10xxxxxx) */
+static inline bool is_utf8_continuation(uint8_t c)
 {
     return (c & 0xC0) == 0x80;
 }
 
 static int utf8_to_codepoint(const char *s, size_t max_len);
 
-// Get display width of a UTF-8 character (handles wide characters)
-// Returns 2 for CJK characters, 1 for most others, 0 for combining marks
+/* Get display width of a UTF-8 character (handles wide characters)
+ * Returns 2 for CJK characters, 1 for most others, 0 for combining marks
+ */
 static inline int utf8_char_width(const char *s)
 {
     /* Use the enhanced UTF-8 to codepoint conversion */
@@ -62,31 +65,31 @@ static inline int utf8_char_width(const char *s)
     if (codepoint < 0x20 || codepoint == 0x7F)
         return 0;
 
-    // CJK Unified Ideographs and common fullwidth ranges
+    /* CJK Unified Ideographs and common fullwidth ranges */
     if ((codepoint >= 0x4E00 &&
-         codepoint <= 0x9FFF) ||  // CJK Unified Ideographs
-        (codepoint >= 0x3400 && codepoint <= 0x4DBF) ||  // CJK Extension A
-        (codepoint >= 0xF900 && codepoint <= 0xFAFF) ||  // CJK Compatibility
-        (codepoint >= 0x2E80 && codepoint <= 0x2EFF) ||  // CJK Radicals
-        (codepoint >= 0x3000 && codepoint <= 0x303F) ||  // CJK Punctuation
-        (codepoint >= 0xFF00 && codepoint <= 0xFFEF)) {  // Fullwidth forms
+         codepoint <= 0x9FFF) || /* CJK Unified Ideographs */
+        (codepoint >= 0x3400 && codepoint <= 0x4DBF) || /* CJK Extension A */
+        (codepoint >= 0xF900 && codepoint <= 0xFAFF) || /* CJK Compatibility */
+        (codepoint >= 0x2E80 && codepoint <= 0x2EFF) || /* CJK Radicals */
+        (codepoint >= 0x3000 && codepoint <= 0x303F) || /* CJK Punctuation */
+        (codepoint >= 0xFF00 && codepoint <= 0xFFEF)) { /* Fullwidth forms */
         return 2;
     }
 
-    // Combining marks have zero width
+    /* Combining marks have zero width */
     if ((codepoint >= 0x0300 &&
-         codepoint <= 0x036F) ||  // Combining Diacritical Marks
+         codepoint <= 0x036F) || /* Combining Diacritical Marks */
         (codepoint >= 0x1AB0 &&
-         codepoint <= 0x1AFF) ||  // Combining Diacritical Extended
+         codepoint <= 0x1AFF) || /* Combining Diacritical Extended */
         (codepoint >= 0x1DC0 &&
-         codepoint <= 0x1DFF)) {  // Combining Diacritical Supplement
+         codepoint <= 0x1DFF)) { /* Combining Diacritical Supplement */
         return 0;
     }
 
     return 1;
 }
 
-// Move to the next UTF-8 character boundary
+/* Move to the next UTF-8 character boundary */
 static inline const char *utf8_next_char(const char *s)
 {
     if (*s == '\0')
@@ -95,7 +98,7 @@ static inline const char *utf8_next_char(const char *s)
     return s + len;
 }
 
-// Move to the previous UTF-8 character boundary
+/* Move to the previous UTF-8 character boundary */
 static inline const char *utf8_prev_char(const char *start, const char *s)
 {
     if (s <= start)
@@ -208,7 +211,7 @@ typedef struct {
     char *egap;    /* End of gap */
     char *ebuffer; /* End of buffer */
     size_t size;   /* Total allocated size */
-    int modified;  /* Modified flag */
+    bool modified; /* Modified flag */
 } gap_buffer_t;
 
 #define GB_INITIAL_SIZE 65536 /* 64KB initial buffer */
@@ -230,7 +233,7 @@ static gap_buffer_t *gb_init(size_t initial_size)
     gb->size = initial_size;
     gb->gap = gb->buffer;
     gb->egap = gb->ebuffer = gb->buffer + initial_size;
-    gb->modified = 0;
+    gb->modified = false;
 
     return gb;
 }
@@ -322,7 +325,7 @@ static bool gb_insert(gap_buffer_t *gb,
     /* Copy text into gap */
     memcpy(gb->gap, text, len);
     gb->gap += len;
-    gb->modified = 1;
+    gb->modified = true;
 
     return true;
 }
@@ -339,7 +342,7 @@ static void gb_delete(gap_buffer_t *gb, size_t pos, size_t len)
         len = available; /* Can't delete more than exists */
 
     gb->egap += len;
-    gb->modified = 1;
+    gb->modified = true;
 }
 
 /* Get character at position */
@@ -367,29 +370,27 @@ static bool gb_load_file(gap_buffer_t *gb, FILE *fp)
             return false; /* Insert failed */
     }
 
-    gb->modified = 0; /* Just loaded, not modified */
+    gb->modified = false; /* Just loaded, not modified */
     return true;
 }
 
 /* Undo/Redo Implementation */
 
-typedef enum { UNDO_INSERT, UNDO_DELETE, UNDO_REPLACE } UndoType;
+typedef enum { UNDO_INSERT, UNDO_DELETE, UNDO_REPLACE } undo_type_t;
 
-typedef struct UndoNode {
-    UndoType type;
+typedef struct undo_node {
+    undo_type_t type;
     size_t pos; /* Position where change occurred */
     size_t len; /* Length of text */
     char *text; /* Text that was inserted/deleted */
-    struct UndoNode *next;
-    struct UndoNode *prev;
-} UndoNode;
+    struct undo_node *next, *prev;
+} undo_node_t;
 
 typedef struct {
-    UndoNode *current; /* Current position in undo history */
-    UndoNode *head;    /* First undo node */
-    UndoNode *tail;    /* Last undo node */
-    int max_undos;     /* Maximum number of undo levels */
-    int count;         /* Current number of undo nodes */
+    undo_node_t *current;     /* Current position in undo history */
+    undo_node_t *head, *tail; /* First/Last undo node */
+    int max_undos;            /* Maximum number of undo levels */
+    int count;                /* Current number of undo nodes */
 } undo_stack_t;
 
 #define MAX_UNDO_LEVELS 100
@@ -411,7 +412,7 @@ static undo_stack_t *undo_init(int max_levels)
 }
 
 /* Free a single undo node */
-static void undo_free_node(UndoNode *node)
+static void undo_free_node(undo_node_t *node)
 {
     if (node) {
         free(node->text);
@@ -426,9 +427,9 @@ static void undo_clear_redo(undo_stack_t *stack)
         return;
 
     /* Remove all nodes after current */
-    UndoNode *node = stack->current->next;
+    undo_node_t *node = stack->current->next;
     while (node) {
-        UndoNode *next = node->next;
+        undo_node_t *next = node->next;
         undo_free_node(node);
         stack->count--;
         node = next;
@@ -442,7 +443,7 @@ static void undo_clear_redo(undo_stack_t *stack)
 
 /* Add a new undo operation */
 static void undo_push(undo_stack_t *stack,
-                      UndoType type,
+                      undo_type_t type,
                       size_t pos,
                       const char *text,
                       size_t len)
@@ -454,7 +455,7 @@ static void undo_push(undo_stack_t *stack,
     undo_clear_redo(stack);
 
     /* Create new node */
-    UndoNode *node = malloc(sizeof(UndoNode));
+    undo_node_t *node = malloc(sizeof(undo_node_t));
     if (!node)
         return;
 
@@ -485,7 +486,7 @@ static void undo_push(undo_stack_t *stack,
 
     /* Remove oldest if we exceed max */
     while (stack->count > stack->max_undos && stack->head) {
-        UndoNode *old = stack->head;
+        undo_node_t *old = stack->head;
         stack->head = old->next;
         if (stack->head)
             stack->head->prev = NULL;
@@ -503,7 +504,7 @@ static bool undo_perform(gap_buffer_t *gb, undo_stack_t *stack)
     if (!gb || !stack || !stack->current)
         return false; /* Nothing to undo */
 
-    UndoNode *node = stack->current;
+    undo_node_t *node = stack->current;
 
     /* Reverse the operation WITHOUT adding to undo stack again */
     switch (node->type) {
@@ -545,7 +546,7 @@ static bool undo_redo(gap_buffer_t *gb, undo_stack_t *stack)
         return false;
 
     /* Find the node to redo */
-    UndoNode *node = NULL;
+    undo_node_t *node = NULL;
     if (stack->current) {
         node = stack->current->next;
     } else if (stack->head) {
@@ -635,7 +636,7 @@ typedef struct {
     char *chars;
     char *render;
     unsigned char *highlight;
-    int hl_open_comment;
+    bool hl_open_comment;
 } editor_row;
 
 typedef struct {
@@ -653,7 +654,7 @@ struct {
     int screen_rows, screen_cols;
     int num_rows;
     editor_row *row;
-    int modified;
+    bool modified;
     char *file_name;
     char status_msg[90];
     time_t status_msg_time;
@@ -667,7 +668,7 @@ struct {
     /* editor config */
     .cursor_x = 0,         .cursor_y = 0,        .render_x = 0,
     .row_offset = 0,       .col_offset = 0,      .num_rows = 0,
-    .row = NULL,           .modified = 0,        .file_name = NULL,
+    .row = NULL,           .modified = false,    .file_name = NULL,
     .status_msg[0] = '\0', .status_msg_time = 0, .copied_char_buffer = NULL,
     .syntax = NULL,        .gb = NULL,           .undo_stack = NULL,
 };
@@ -711,8 +712,15 @@ char *C_keywords[] = {
 };
 
 editor_syntax DB[] = {
-    {"c", C_extensions, C_keywords, "//", "/*", "*/",
-     HIGHLIGHT_NUMBERS | HIGHLIGHT_STRINGS},
+    {
+        "c",
+        C_extensions,
+        C_keywords,
+        "//",
+        "/*",
+        "*/",
+        HIGHLIGHT_NUMBERS | HIGHLIGHT_STRINGS,
+    },
 };
 
 #define DB_ENTRIES (sizeof(DB) / sizeof(DB[0]))
@@ -876,7 +884,7 @@ static void highlight(editor_row *row)
     int mce_len = mce ? strlen(mce) : 0;
     bool prev_sep = true;
     int in_string = 0;
-    int in_comment = (row->idx > 0 && ec.row[row->idx - 1].hl_open_comment);
+    bool in_comment = (row->idx > 0 && ec.row[row->idx - 1].hl_open_comment);
     int i = 0;
     while (i < row->render_size) {
         char c = row->render[i];
@@ -1070,7 +1078,7 @@ static void update_row(editor_row *row)
     int wide_chars = 0;
     int byte_pos = 0;
 
-    // Count tabs and wide characters for buffer allocation
+    /* Count tabs and wide characters for buffer allocation */
     while (byte_pos < row->size) {
         if (row->chars[byte_pos] == '\t') {
             tabs++;
@@ -1086,7 +1094,7 @@ static void update_row(editor_row *row)
     }
 
     free(row->render);
-    // Allocate extra space for tabs and wide characters
+    /* Allocate extra space for tabs and wide characters */
     row->render = malloc(row->size + tabs * (TAB_STOP - 1) + wide_chars + 1);
 
     int idx = 0;
@@ -1100,7 +1108,7 @@ static void update_row(editor_row *row)
             byte_pos++;
         } else {
             int char_len = utf8_byte_length((uint8_t) row->chars[byte_pos]);
-            // Copy the UTF-8 sequence as-is
+            /* Copy the UTF-8 sequence as-is */
             for (int i = 0; i < char_len && byte_pos + i < row->size; i++)
                 row->render[idx++] = row->chars[byte_pos + i];
             byte_pos += char_len;
@@ -1128,7 +1136,7 @@ static void insert_row(int at, char *s, size_t line_len)
     ec.row[at].render_size = 0;
     ec.row[at].render = NULL;
     ec.row[at].highlight = NULL;
-    ec.row[at].hl_open_comment = 0;
+    ec.row[at].hl_open_comment = false;
     update_row(&ec.row[at]);
     ec.num_rows++;
     ec.modified++;
@@ -1158,9 +1166,8 @@ static void cut()
 
     /* Calculate line position in gap buffer */
     size_t line_start = 0;
-    for (int i = 0; i < ec.cursor_y; i++) {
+    for (int i = 0; i < ec.cursor_y; i++)
         line_start += ec.row[i].size + 1;
-    }
 
     /* Delete entire line including newline */
     size_t line_len = ec.row[ec.cursor_y].size;
@@ -1196,7 +1203,7 @@ static void cut()
     if (ec.cursor_y >= ec.num_rows && ec.num_rows > 0)
         ec.cursor_y = ec.num_rows - 1;
     ec.cursor_x = 0;
-    ec.modified = 1;
+    ec.modified = true;
 }
 
 static void paste()
@@ -1225,7 +1232,7 @@ static void paste()
         row->size += paste_len;
         update_row(row);
         ec.cursor_x += paste_len;
-        ec.modified = 1;
+        ec.modified = true;
     }
 }
 
@@ -1257,7 +1264,7 @@ static void newline()
         }
         ec.cursor_y++;
         ec.cursor_x = 0;
-        ec.modified = 1;
+        ec.modified = true;
     }
 }
 
@@ -1396,7 +1403,7 @@ static void insert_char(int c)
         row->size += utf8_buffer.len;
         update_row(row);
         ec.cursor_x += utf8_buffer.len;
-        ec.modified = 1;
+        ec.modified = true;
     }
 
     /* Reset UTF-8 buffer */
@@ -1435,7 +1442,7 @@ static void delete_char()
         row->size -= char_len;
         update_row(row);
         ec.cursor_x = prev_pos;
-        ec.modified = 1;
+        ec.modified = true;
     } else {
         /* Delete newline - join with previous line */
         if (ec.cursor_y > 0) {
@@ -1462,7 +1469,7 @@ static void delete_char()
                 ec.row[j].idx--;
             ec.num_rows--;
             ec.cursor_y--;
-            ec.modified = 1;
+            ec.modified = true;
         }
     }
 }
@@ -1517,7 +1524,7 @@ static void open_file(char *file_name)
     }
     free(line);
     fclose(file);
-    ec.modified = 0;
+    ec.modified = false;
 }
 
 static void save_file()
@@ -1537,7 +1544,7 @@ static void save_file()
         if ((ftruncate(fd, len) != -1) && (write(fd, buf, len) == len)) {
             close(fd);
             free(buf);
-            ec.modified = 0;
+            ec.modified = false;
             if (len >= 1024)
                 set_status_message("%d KiB written to disk", len >> 10);
             else
@@ -1793,10 +1800,10 @@ static void handle_sigcont()
 
 static bool confirm_dialog(const char *msg)
 {
-    bool choice = false;  // false = No (default), true = Yes
+    bool choice = false; /* false = No (default), true = Yes */
 
     while (1) {
-        // Build the message with highlighted options
+        /* Build the message with highlighted options */
         char status_msg[256];
         if (!choice) {
             snprintf(status_msg, sizeof(status_msg),
@@ -1811,24 +1818,24 @@ static bool confirm_dialog(const char *msg)
 
         int c = read_key();
         switch (c) {
-        case '\r':  // Enter key
+        case '\r': /* Enter key */
             set_status_message("");
             return choice;
-        case '\x1b':  // ESC key
+        case '\x1b': /* ESC key */
         case CTRL_('q'):
             set_status_message("");
-            return false;  // Cancel = No
+            return false; /* Cancel = No */
         case ARROW_LEFT:
         case ARROW_RIGHT:
-            choice = !choice;  // Toggle between Yes and No
+            choice = !choice; /* Toggle between Yes and No */
             break;
         case 'y':
         case 'Y':
-            choice = true;  // Quick key for Yes
+            choice = true; /* Quick key for Yes */
             break;
         case 'n':
         case 'N':
-            choice = false;  // Quick key for No
+            choice = false; /* Quick key for No */
             break;
         }
     }
@@ -1888,7 +1895,7 @@ static void move_cursor(int key)
     switch (key) {
     case ARROW_LEFT:
         if (ec.cursor_x != 0) {
-            // Move to previous UTF-8 character boundary
+            /* Move to previous UTF-8 character boundary */
             if (row) {
                 const char *prev =
                     utf8_prev_char(row->chars, row->chars + ec.cursor_x);
@@ -1903,7 +1910,7 @@ static void move_cursor(int key)
         break;
     case ARROW_RIGHT:
         if (row && ec.cursor_x < row->size) {
-            // Move to next UTF-8 character boundary
+            /* Move to next UTF-8 character boundary */
             const char *next = utf8_next_char(row->chars + ec.cursor_x);
             ec.cursor_x = next - row->chars;
             if (ec.cursor_x > row->size)
