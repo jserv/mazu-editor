@@ -534,7 +534,7 @@ static bool undo_perform(gap_buffer_t *gb, undo_stack_t *stack)
     gb_sync_to_rows(gb);
 
     /* Mark as modified if we have undo history */
-    gb->modified = (stack->current != NULL) ? 1 : 0;
+    gb->modified = (stack->current != NULL);
 
     return true;
 }
@@ -996,7 +996,7 @@ static int token_to_color(int highlight)
     case NUMBER:
         return 31; /* Red */
     case MATCH:
-        return 35; /* Magenta */
+        return 43; /* Yellow background */
     default:
         return 97;
     }
@@ -1557,12 +1557,17 @@ static void save_file()
     set_status_message("Error: %s", strerror(errno));
 }
 
+/* Global variables for search state - needed for prompt display */
+static int search_last_match = -1;
+static int search_total_matches = 0;
+static int search_current_match = 0;
+
 static void search_cb(char *query, int key)
 {
-    static int last_match = -1;
     static int direction = 1;
     static int saved_highlight_line;
     static char *saved_hightlight = NULL;
+
     if (saved_hightlight) {
         memcpy(ec.row[saved_highlight_line].highlight, saved_hightlight,
                ec.row[saved_highlight_line].render_size);
@@ -1570,21 +1575,35 @@ static void search_cb(char *query, int key)
         saved_hightlight = NULL;
     }
     if (key == '\r' || key == '\x1b') {
-        last_match = -1;
+        search_last_match = -1;
         direction = 1;
+        search_total_matches = 0;
+        search_current_match = 0;
         return;
     }
     if ((key == ARROW_RIGHT) || (key == ARROW_DOWN))
         direction = 1;
     else if ((key == ARROW_LEFT) || (key == ARROW_UP)) {
-        if (last_match == -1)
+        if (search_last_match == -1)
             return;
         direction = -1;
     } else {
-        last_match = -1;
+        search_last_match = -1;
         direction = 1;
+        /* Count total matches when search term changes */
+        search_total_matches = 0;
+        search_current_match = 0;
+        if (strlen(query) > 0) {
+            for (int i = 0; i < ec.num_rows; i++) {
+                char *p = ec.row[i].render;
+                while ((p = strstr(p, query)) != NULL) {
+                    search_total_matches++;
+                    p++;
+                }
+            }
+        }
     }
-    int current = last_match;
+    int current = search_last_match;
     for (int i = 0; i < ec.num_rows; i++) {
         current += direction;
         if (current == -1)
@@ -1594,7 +1613,7 @@ static void search_cb(char *query, int key)
         editor_row *row = &ec.row[current];
         char *match = strstr(row->render, query);
         if (match) {
-            last_match = current;
+            search_last_match = current;
             ec.cursor_y = current;
             ec.cursor_x = row_renderx_to_cursorx(row, match - row->render);
             ec.row_offset = ec.num_rows;
@@ -1603,6 +1622,15 @@ static void search_cb(char *query, int key)
             if (saved_hightlight)
                 memcpy(saved_hightlight, row->highlight, row->render_size);
             memset(&row->highlight[match - row->render], MATCH, strlen(query));
+
+            /* Update match counter */
+            if (direction == 1)
+                search_current_match =
+                    (search_current_match % search_total_matches) + 1;
+            else
+                search_current_match = (search_current_match - 1) > 0
+                                           ? search_current_match - 1
+                                           : search_total_matches;
             break;
         }
     }
@@ -1614,7 +1642,13 @@ static void search()
     int saved_cursor_y = ec.cursor_y;
     int saved_col_offset = ec.col_offset;
     int saved_row_offset = ec.row_offset;
-    char *query = prompt("Search: %s (ESC / Enter / Arrows)", search_cb);
+
+    /* Reset search state for new search */
+    search_last_match = -1;
+    search_total_matches = 0;
+    search_current_match = 0;
+
+    char *query = prompt("Search", search_cb);
     if (query)
         free(query);
     else {
@@ -1693,11 +1727,23 @@ static void draw_messagebar(editor_buf *eb)
 {
     buf_append(eb, "\x1b[93m\x1b[44m\x1b[K", 13);
     int msg_len = strlen(ec.status_msg);
-    if (msg_len > ec.screen_cols)
-        msg_len = ec.screen_cols;
-    /* display for 5 seconds and then hide */
-    if (msg_len && time(NULL) - ec.status_msg_time < 5)
-        buf_append(eb, ec.status_msg, msg_len);
+
+    /* For search messages, try to show as much as possible */
+    if (strstr(ec.status_msg, "Search:")) {
+        /* Always show search messages, even if long */
+        if (msg_len > ec.screen_cols) {
+            /* Truncate but try to keep the help text visible */
+            buf_append(eb, ec.status_msg, ec.screen_cols);
+        } else {
+            buf_append(eb, ec.status_msg, msg_len);
+        }
+    } else {
+        /* Regular messages: truncate and show for 5 seconds */
+        if (msg_len > ec.screen_cols)
+            msg_len = ec.screen_cols;
+        if (msg_len && time(NULL) - ec.status_msg_time < 5)
+            buf_append(eb, ec.status_msg, msg_len);
+    }
     buf_append(eb, "\x1b[0m", 4);
 }
 
@@ -1745,14 +1791,27 @@ static void draw_rows(editor_buf *eb)
                     buf_append(eb, &c[j], 1);
                 } else {
                     int color = token_to_color(hl[j]);
-                    if (color != current_color) {
-                        current_color = color;
-                        char buf[16];
-                        int c_len =
-                            snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-                        buf_append(eb, buf, c_len);
+                    if (hl[j] == MATCH) {
+                        /* Use inverse video for search matches */
+                        buf_append(eb, "\x1b[7m", 4);
+                        buf_append(eb, &c[j], 1);
+                        buf_append(eb, "\x1b[27m", 5);
+                        if (current_color != -1) {
+                            char buf[16];
+                            int c_len = snprintf(buf, sizeof(buf), "\x1b[%dm",
+                                                 current_color);
+                            buf_append(eb, buf, c_len);
+                        }
+                    } else {
+                        if (color != current_color) {
+                            current_color = color;
+                            char buf[16];
+                            int c_len =
+                                snprintf(buf, sizeof(buf), "\x1b[%dm", color);
+                            buf_append(eb, buf, c_len);
+                        }
+                        buf_append(eb, &c[j], 1);
                     }
-                    buf_append(eb, &c[j], 1);
                 }
             }
             buf_append(eb, "\x1b[39m", 5);
@@ -1849,8 +1908,36 @@ static char *prompt(const char *msg, void (*callback)(char *, int))
         return NULL;
     size_t buf_len = 0;
     buf[0] = '\0';
+
+    /* Check if this is a search prompt */
+    bool is_search = (callback == search_cb);
+
     while (1) {
-        set_status_message(msg, buf);
+        /* Special formatting for search prompt */
+        if (is_search) {
+            /* Build the complete search message with help text */
+            char display_msg[512];
+
+            /* Format: "Search: [query] [match info] (help text)" */
+            if (search_total_matches > 0 && buf_len > 0) {
+                snprintf(display_msg, sizeof(display_msg),
+                         "Search: %s [%d/%d] (arrows: navigate, Enter: exit, "
+                         "ESC: cancel)",
+                         buf, search_current_match, search_total_matches);
+            } else {
+                snprintf(
+                    display_msg, sizeof(display_msg),
+                    "Search: %s (arrows: navigate, Enter: exit, ESC: cancel)",
+                    buf);
+            }
+
+            set_status_message("%s", display_msg);
+        } else {
+            /* For non-search prompts, use the format string */
+            char formatted_msg[256];
+            snprintf(formatted_msg, sizeof(formatted_msg), msg, buf);
+            set_status_message("%s", formatted_msg);
+        }
         refresh_screen();
         int c = read_key();
         if ((c == DEL_KEY) || (c == CTRL_('h')) || (c == BACKSPACE)) {
