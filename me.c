@@ -2,9 +2,18 @@
  * A minimalist editor with syntax highlight, copy/paste, undo, and search.
  */
 
+#if defined(__APPLE__) && !defined(_DARWIN_C_SOURCE)
+#define _DARWIN_C_SOURCE /* Enable SIGWINCH on macOS */
+#endif
+
+/* Timer feature: Set to 1 to enable automatic clock updates, 0 to disable */
+#ifndef ENABLE_TIMER
+#define ENABLE_TIMER 1
+#endif
+
+/* Standard library headers */
 #include <ctype.h>
 #include <errno.h>
-#include <fcntl.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -12,11 +21,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* System headers */
+#include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <termios.h>
-#include <time.h>
 #include <unistd.h>
+
+/* Timer-specific headers */
+#if ENABLE_TIMER
+#include <poll.h>
+#include <sys/time.h>
+#include <time.h>
+#else
+/* time() is still needed for status messages even without timer */
+#include <time.h>
+#endif
 
 #define CTRL_(k) ((k) & (0x1f))
 #define TAB_STOP 4
@@ -643,6 +664,10 @@ struct {
     /* Gap buffer and undo/redo support */
     gap_buffer_t *gb;
     undo_stack_t *undo_stack;
+#if ENABLE_TIMER
+    /* Timer support for time update */
+    time_t last_update_time;
+#endif
 } ec = {
     .cursor_x = 0,
     .cursor_y = 0,
@@ -659,6 +684,9 @@ struct {
     .syntax = NULL,
     .gb = NULL,
     .undo_stack = NULL,
+#if ENABLE_TIMER
+    .last_update_time = 0,
+#endif
 };
 
 typedef struct {
@@ -1656,23 +1684,33 @@ static void scroll()
 
 static void draw_statusbar(editor_buf_t *eb)
 {
-    time_t now = time(NULL);
-    struct tm currtime_buf;
-    struct tm *currtime;
     buf_append(eb, "\x1b[100m", 6); /* Dark gray */
     char status[80], r_status[80];
-    currtime = localtime_r(&now, &currtime_buf);
+
     int len = snprintf(status, sizeof(status), "  File: %.20s %s",
                        ec.file_name ? ec.file_name : "< New >",
                        ec.modified ? "(modified)" : "");
     int col_size = ec.row &&ec.cursor_y <= ec.num_rows - 1
                        ? col_size = ec.row[ec.cursor_y].size
                        : 0;
+
+#if ENABLE_TIMER
+    /* Display time when timer is enabled */
+    time_t now = time(NULL);
+    struct tm currtime_buf;
+    struct tm *currtime = localtime_r(&now, &currtime_buf);
     int r_len = snprintf(
         r_status, sizeof(r_status), "%d/%d lines  %d/%d cols [ %2d:%2d:%2d ]",
         (ec.cursor_y + 1 > ec.num_rows) ? ec.num_rows : ec.cursor_y + 1,
         ec.num_rows, ec.cursor_x + 1, col_size, currtime->tm_hour,
         currtime->tm_min, currtime->tm_sec);
+#else
+    /* No time display when timer is disabled */
+    int r_len = snprintf(
+        r_status, sizeof(r_status), "%d/%d lines  %d/%d cols",
+        (ec.cursor_y + 1 > ec.num_rows) ? ec.num_rows : ec.cursor_y + 1,
+        ec.num_rows, ec.cursor_x + 1, col_size);
+#endif
     if (len > ec.screen_cols)
         len = ec.screen_cols;
     buf_append(eb, status, len);
@@ -2103,6 +2141,18 @@ static void process_key()
     }
 }
 
+#if ENABLE_TIMER
+static bool check_timer_update(void)
+{
+    time_t current_time = time(NULL);
+    if (current_time != ec.last_update_time) {
+        ec.last_update_time = current_time;
+        return true; /* Need refresh */
+    }
+    return false;
+}
+#endif
+
 static void init_editor()
 {
     update_window_size();
@@ -2113,6 +2163,11 @@ static void init_editor()
     ec.gb = gb_init(GB_INITIAL_SIZE);
     if (ec.gb)
         ec.undo_stack = undo_init(MAX_UNDO_LEVELS);
+
+#if ENABLE_TIMER
+    /* Initialize time tracking */
+    ec.last_update_time = time(NULL);
+#endif
 }
 
 int main(int argc, char *argv[])
@@ -2125,9 +2180,31 @@ int main(int argc, char *argv[])
         "Mazu Editor | ^Q Exit | ^S Save | ^F Search | "
         "^Z Undo | ^R Redo | ^C Copy | ^X Cut | ^V Paste");
     refresh_screen();
+
+    /* Main event loop */
     while (1) {
+#if ENABLE_TIMER
+        /* Check if timer needs refresh */
+        if (check_timer_update())
+            refresh_screen();
+
+        /* Use poll for non-blocking keyboard input */
+        struct pollfd fds[1];
+        fds[0].fd = STDIN_FILENO;
+        fds[0].events = POLLIN;
+
+        /* Poll with 100ms timeout */
+        int ret = poll(fds, 1, 100);
+
+        if (ret > 0 && (fds[0].revents & POLLIN)) {
+            process_key();
+            refresh_screen();
+        }
+#else
+        /* Simple blocking read when timer is disabled */
         process_key();
         refresh_screen();
+#endif
     }
     /* not reachable */
     return 0;
