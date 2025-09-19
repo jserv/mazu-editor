@@ -1064,6 +1064,49 @@ static void handle_sigcont()
     refresh_screen();
 }
 
+static int confirm_dialog(const char *msg)
+{
+    int choice = 0;  // 0 = No (default), 1 = Yes
+
+    while (1) {
+        // Build the message with highlighted options
+        char status_msg[256];
+        if (choice == 0) {
+            snprintf(status_msg, sizeof(status_msg),
+                     "%s  \x1b[7m[ No ]\x1b[m   Yes   (ESC: cancel)", msg);
+        } else {
+            snprintf(status_msg, sizeof(status_msg),
+                     "%s   No   \x1b[7m[ Yes ]\x1b[m  (ESC: cancel)", msg);
+        }
+
+        set_status_message("%s", status_msg);
+        refresh_screen();
+
+        int c = read_key();
+        switch (c) {
+        case '\r':  // Enter key
+            set_status_message("");
+            return choice;
+        case '\x1b':  // ESC key
+        case CTRL_('q'):
+            set_status_message("");
+            return 0;  // Cancel = No
+        case ARROW_LEFT:
+        case ARROW_RIGHT:
+            choice = !choice;  // Toggle between Yes and No
+            break;
+        case 'y':
+        case 'Y':
+            choice = 1;  // Quick key for Yes
+            break;
+        case 'n':
+        case 'N':
+            choice = 0;  // Quick key for No
+            break;
+        }
+    }
+}
+
 static char *prompt(const char *msg, void (*callback)(char *, int))
 {
     size_t buf_size = 128;
@@ -1169,11 +1212,10 @@ static void process_key()
             insert_char('\t');
         break;
     case CTRL_('q'):
-        if (ec.modified &&
-            !prompt("File has been modified. Type 'yes' and enter "
-                    "to force quit (ESC to cancel)",
-                    NULL))
-            return;
+        if (ec.modified) {
+            if (!confirm_dialog("File has been modified. Quit without saving?"))
+                return;
+        }
         clear_screen();
         close_buffer();
         exit(0);
