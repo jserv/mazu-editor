@@ -1,9 +1,8 @@
 CFLAGS = -Wall -std=gnu99
-LDFLAGS = -lpthread
 
 all: me
 me: me.c
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $<
 
 clean:
 	$(RM) me

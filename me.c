@@ -3,7 +3,6 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -1086,14 +1085,6 @@ void process_key()
     }
 }
 
-void *refresh_thread(void *dummy)
-{
-    while (1) {
-        refresh_screen();
-        usleep(1000);
-    }
-    return NULL;
-}
 
 void init_editor()
 {
@@ -1111,12 +1102,11 @@ int main(int argc, char *argv[])
     set_status_message(
         "Mazu Editor | ^Q Exit | ^S Save | ^F Search | "
         "^C Copy | ^X Cut | ^V Paste | ^Z Suspend");
-    if (pthread_create(&(pthread_t){0}, NULL, &refresh_thread, NULL)) {
-        perror("pthread_create");
-        return 1;
-    }
-    while (1)
+    refresh_screen();
+    while (1) {
         process_key();
+        refresh_screen();
+    }
     /* not reachable */
     return 0;
 }
