@@ -26,19 +26,15 @@
 /* Get the byte length of a UTF-8 character from its first byte */
 static inline int utf8_byte_length(uint8_t c)
 {
-    /* Quick check for ASCII */
-    if ((c & 0x80) == 0)
-        return 1;
-
-    /* Use proper validation for multibyte sequences */
-    if ((c & 0xE0) == 0xC0 && c >= 0xC2) /* Valid 2-byte start */
+    if (!(c & 0x80))
+        return 1; /* ASCII */
+    if ((c & 0xE0) == 0xC0 && c >= 0xC2)
         return 2;
-    if ((c & 0xF0) == 0xE0) /* 3-byte start */
+    if ((c & 0xF0) == 0xE0)
         return 3;
-    if ((c & 0xF8) == 0xF0 && c <= 0xF4) /* Valid 4-byte start */
+    if ((c & 0xF8) == 0xF0 && c <= 0xF4)
         return 4;
-
-    return 1; /* Invalid UTF-8 start byte, treat as single byte */
+    return 1; /* Invalid UTF-8, treat as single byte */
 }
 
 /* Check if byte is a UTF-8 continuation byte (10xxxxxx) */
@@ -92,10 +88,7 @@ static inline int utf8_char_width(const char *s)
 /* Move to the next UTF-8 character boundary */
 static inline const char *utf8_next_char(const char *s)
 {
-    if (*s == '\0')
-        return s;
-    int len = utf8_byte_length((uint8_t) *s);
-    return s + len;
+    return *s ? s + utf8_byte_length((uint8_t) *s) : s;
 }
 
 /* Move to the previous UTF-8 character boundary */
@@ -224,8 +217,7 @@ static gap_buffer_t *gb_init(size_t initial_size)
     if (!gb)
         return NULL;
 
-    gb->buffer = malloc(initial_size);
-    if (!gb->buffer) {
+    if (!(gb->buffer = malloc(initial_size))) {
         free(gb);
         return NULL;
     }
@@ -234,12 +226,11 @@ static gap_buffer_t *gb_init(size_t initial_size)
     gb->gap = gb->buffer;
     gb->egap = gb->ebuffer = gb->buffer + initial_size;
     gb->modified = false;
-
     return gb;
 }
 
 /* Get total text length (excluding gap) */
-static size_t gb_length(gap_buffer_t *gb)
+static inline size_t gb_length(gap_buffer_t *gb)
 {
     return (gb->gap - gb->buffer) + (gb->ebuffer - gb->egap);
 }
@@ -348,11 +339,7 @@ static void gb_delete(gap_buffer_t *gb, size_t pos, size_t len)
 /* Get character at position */
 static int gb_get_char(gap_buffer_t *gb, size_t pos)
 {
-    if (pos >= gb_length(gb))
-        return -1; /* Out of bounds */
-
-    char *ptr = gb_ptr(gb, pos);
-    return (unsigned char) *ptr;
+    return pos >= gb_length(gb) ? -1 : (unsigned char) *gb_ptr(gb, pos);
 }
 
 /* Load file into gap buffer */
@@ -402,8 +389,7 @@ static undo_stack_t *undo_init(int max_levels)
     if (!stack)
         return NULL;
 
-    stack->head = NULL;
-    stack->tail = NULL;
+    stack->head = stack->tail = NULL;
     stack->current = NULL;
     stack->max_undos = max_levels;
     stack->count = 0;
@@ -436,8 +422,7 @@ static void undo_clear_redo(undo_stack_t *stack)
     }
 
     /* Update tail */
-    stack->tail = stack->current;
-    if (stack->tail)
+    if ((stack->tail = stack->current))
         stack->tail->next = NULL;
 }
 
@@ -474,14 +459,12 @@ static void undo_push(undo_stack_t *stack,
     node->prev = stack->current;
     node->next = NULL;
 
-    if (stack->current) {
+    if (stack->current)
         stack->current->next = node;
-    } else {
+    else
         stack->head = node;
-    }
 
-    stack->tail = node;
-    stack->current = node;
+    stack->tail = stack->current = node;
     stack->count++;
 
     /* Remove oldest if we exceed max */
@@ -546,12 +529,7 @@ static bool undo_redo(gap_buffer_t *gb, undo_stack_t *stack)
         return false;
 
     /* Find the node to redo */
-    undo_node_t *node = NULL;
-    if (stack->current) {
-        node = stack->current->next;
-    } else if (stack->head) {
-        node = stack->head;
-    }
+    undo_node_t *node = stack->current ? stack->current->next : stack->head;
 
     if (!node)
         return false; /* Nothing to redo */
@@ -868,7 +846,7 @@ static void close_buffer()
 
 static bool is_token_separator(int c)
 {
-    return isspace(c) || (c == '\0') || strchr(",.()+-/*=~%<>[]:;", c);
+    return isspace(c) || !c || strchr(",.()+-/*=~%<>[]:;", c);
 }
 
 static bool is_part_of_number(int c)
@@ -1285,8 +1263,7 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
         return;
 
     /* Save cursor position */
-    int saved_cursor_y = ec.cursor_y;
-    int saved_cursor_x = ec.cursor_x;
+    int saved_y = ec.cursor_y, saved_x = ec.cursor_x;
 
     /* Clear existing rows */
     for (int i = 0; i < ec.num_rows; i++) {
@@ -1299,12 +1276,10 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
     ec.num_rows = 0;
 
     /* Convert gap buffer to rows */
-    size_t pos = 0;
-    size_t len = gb_length(gb);
+    size_t pos = 0, len = gb_length(gb);
 
     while (pos < len) {
-        size_t line_start = pos;
-        size_t line_end = pos;
+        size_t line_start = pos, line_end = pos;
 
         /* Find end of line */
         while (line_end < len && gb_get_char(gb, line_end) != '\n')
@@ -1317,38 +1292,27 @@ static void gb_sync_to_rows(gap_buffer_t *gb)
             for (size_t i = 0; i < line_len; i++)
                 line[i] = gb_get_char(gb, line_start + i);
             line[line_len] = '\0';
-
             insert_row(ec.num_rows, line, line_len);
             free(line);
         }
 
         /* Move past newline */
-        pos = line_end;
-        if (pos < len && gb_get_char(gb, pos) == '\n')
-            pos++;
+        pos = line_end + (pos < len && gb_get_char(gb, line_end) == '\n');
     }
 
     /* Ensure at least one row */
-    if (ec.num_rows == 0)
+    if (!ec.num_rows)
         insert_row(0, "", 0);
 
     /* Update modified flag from gap buffer */
     ec.modified = gb->modified;
 
     /* Restore cursor position within bounds */
-    if (saved_cursor_y >= ec.num_rows) {
-        ec.cursor_y = ec.num_rows - 1;
-    } else {
-        ec.cursor_y = saved_cursor_y;
-    }
-
-    if (ec.cursor_y >= 0 && ec.cursor_y < ec.num_rows) {
-        if (saved_cursor_x > ec.row[ec.cursor_y].size) {
-            ec.cursor_x = ec.row[ec.cursor_y].size;
-        } else {
-            ec.cursor_x = saved_cursor_x;
-        }
-    }
+    ec.cursor_y = saved_y >= ec.num_rows ? ec.num_rows - 1 : saved_y;
+    if (ec.cursor_y >= 0 && ec.cursor_y < ec.num_rows)
+        ec.cursor_x = saved_x > ec.row[ec.cursor_y].size
+                          ? ec.row[ec.cursor_y].size
+                          : saved_x;
 }
 
 /* Buffer for accumulating UTF-8 bytes */
@@ -1434,15 +1398,13 @@ static void delete_char()
 
     /* Calculate position in gap buffer */
     size_t pos = 0;
-    for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
+    for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++)
         pos += ec.row[i].size + 1; /* +1 for newline */
-    }
 
     if (ec.cursor_x > 0) {
         /* Delete character before cursor */
         const char *prev = utf8_prev_char(row->chars, row->chars + ec.cursor_x);
-        int prev_pos = prev - row->chars;
-        int char_len = ec.cursor_x - prev_pos;
+        int prev_pos = prev - row->chars, char_len = ec.cursor_x - prev_pos;
 
         gb_delete_with_undo(ec.gb, ec.undo_stack, pos + prev_pos, char_len);
 
@@ -1490,13 +1452,11 @@ static char *rows_tostring(int *buf_len)
     for (int j = 0; j < ec.num_rows; j++)
         total_len += ec.row[j].size + 1;
     *buf_len = total_len;
-    char *buf = malloc(total_len);
-    char *p = buf;
+    char *buf = malloc(total_len), *p = buf;
     for (int j = 0; j < ec.num_rows; j++) {
         memcpy(p, ec.row[j].chars, ec.row[j].size);
         p += ec.row[j].size;
-        *p = '\n';
-        p++;
+        *p++ = '\n';
     }
     return buf;
 }
@@ -1645,10 +1605,8 @@ static void search_cb(char *query, int key)
 
 static void search()
 {
-    int saved_cursor_x = ec.cursor_x;
-    int saved_cursor_y = ec.cursor_y;
-    int saved_col_offset = ec.col_offset;
-    int saved_row_offset = ec.row_offset;
+    int saved_x = ec.cursor_x, saved_y = ec.cursor_y;
+    int saved_col = ec.col_offset, saved_row = ec.row_offset;
 
     /* Reset search state for new search */
     search_last_match = -1;
@@ -1659,10 +1617,10 @@ static void search()
     if (query)
         free(query);
     else {
-        ec.cursor_x = saved_cursor_x;
-        ec.cursor_y = saved_cursor_y;
-        ec.col_offset = saved_col_offset;
-        ec.row_offset = saved_row_offset;
+        ec.cursor_x = saved_x;
+        ec.cursor_y = saved_y;
+        ec.col_offset = saved_col;
+        ec.row_offset = saved_row;
     }
 }
 
