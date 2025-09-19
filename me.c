@@ -110,6 +110,457 @@ static inline const char *utf8_prev_char(const char *start, const char *s)
     return s;
 }
 
+/* Forward declaration needed early for debugging */
+static void set_status_message(const char *msg, ...);
+
+/* A gap buffer maintains a gap (empty space) at the cursor position,
+ * making insertions and deletions at that position O(1) operations.
+ * Memory layout: [text before gap][    GAP    ][text after gap]
+ */
+typedef struct {
+    char *buffer;  /* Start of buffer */
+    char *gap;     /* Start of gap */
+    char *egap;    /* End of gap */
+    char *ebuffer; /* End of buffer */
+    size_t size;   /* Total allocated size */
+    int modified;  /* Modified flag */
+} gap_buffer_t;
+
+#define GB_INITIAL_SIZE 65536 /* 64KB initial buffer */
+#define GB_GROW_SIZE 4096     /* 4KB growth increment */
+
+/* Initialize a gap buffer with given size */
+static gap_buffer_t *gb_init(size_t initial_size)
+{
+    gap_buffer_t *gb = malloc(sizeof(gap_buffer_t));
+    if (!gb)
+        return NULL;
+
+    gb->buffer = malloc(initial_size);
+    if (!gb->buffer) {
+        free(gb);
+        return NULL;
+    }
+
+    gb->size = initial_size;
+    gb->gap = gb->buffer;
+    gb->egap = gb->ebuffer = gb->buffer + initial_size;
+    gb->modified = 0;
+
+    return gb;
+}
+
+
+/* Get total text length (excluding gap) */
+static size_t gb_length(gap_buffer_t *gb)
+{
+    return (gb->gap - gb->buffer) + (gb->ebuffer - gb->egap);
+}
+
+/* Convert file position to buffer pointer */
+static char *gb_ptr(gap_buffer_t *gb, size_t pos)
+{
+    size_t front_size = gb->gap - gb->buffer;
+
+    if (pos <= front_size) {
+        return gb->buffer + pos;
+    } else {
+        return gb->egap + (pos - front_size);
+    }
+}
+
+/* Move gap to position */
+static void gb_move_gap(gap_buffer_t *gb, size_t pos)
+{
+    char *dest = gb_ptr(gb, pos);
+
+    if (dest < gb->gap) {
+        /* Move gap backward - shift text forward */
+        size_t len = gb->gap - dest;
+        gb->egap -= len;
+        gb->gap -= len;
+        memmove(gb->egap, gb->gap, len);
+    } else if (dest > gb->gap) {
+        /* Move gap forward - shift text backward */
+        size_t len = dest - gb->gap;
+        memmove(gb->gap, gb->egap, len);
+        gb->gap += len;
+        gb->egap += len;
+    }
+}
+
+/* Grow the gap to ensure minimum size */
+static int gb_grow_gap(gap_buffer_t *gb, size_t min_gap)
+{
+    size_t gap_size = gb->egap - gb->gap;
+
+    if (gap_size >= min_gap) {
+        return 1; /* Already large enough */
+    }
+
+    /* Calculate new size */
+    size_t text_size = gb_length(gb);
+    size_t new_size = text_size + min_gap + GB_GROW_SIZE;
+
+    /* Save current gap position */
+    size_t gap_pos = gb->gap - gb->buffer;
+    size_t after_gap_size = gb->ebuffer - gb->egap;
+
+    /* Reallocate buffer */
+    char *new_buffer = realloc(gb->buffer, new_size);
+    if (!new_buffer)
+        return 0; /* Allocation failed */
+
+    /* Update pointers */
+    gb->buffer = new_buffer;
+    gb->gap = new_buffer + gap_pos;
+    gb->ebuffer = new_buffer + new_size;
+    gb->egap = gb->ebuffer - after_gap_size;
+
+    /* Move text after gap to end of new buffer */
+    if (after_gap_size > 0)
+        memmove(gb->egap, gb->gap + gap_size, after_gap_size);
+
+    gb->size = new_size;
+    return 1;
+}
+
+/* Insert text at position */
+static int gb_insert(gap_buffer_t *gb, size_t pos, const char *text, size_t len)
+{
+    /* Move gap to insertion point */
+    gb_move_gap(gb, pos);
+
+    /* Ensure gap is large enough */
+    if (!gb_grow_gap(gb, len)) {
+        return 0; /* Failed to grow */
+    }
+
+    /* Copy text into gap */
+    memcpy(gb->gap, text, len);
+    gb->gap += len;
+    gb->modified = 1;
+
+    return 1;
+}
+
+/* Delete text from position */
+static void gb_delete(gap_buffer_t *gb, size_t pos, size_t len)
+{
+    /* Move gap to deletion point */
+    gb_move_gap(gb, pos);
+
+    /* Extend gap to cover deleted text */
+    size_t available = gb->ebuffer - gb->egap;
+    if (len > available)
+        len = available; /* Can't delete more than exists */
+
+    gb->egap += len;
+    gb->modified = 1;
+}
+
+/* Get character at position */
+static int gb_get_char(gap_buffer_t *gb, size_t pos)
+{
+    if (pos >= gb_length(gb))
+        return -1; /* Out of bounds */
+
+    char *ptr = gb_ptr(gb, pos);
+    return (unsigned char) *ptr;
+}
+
+
+
+/* Load file into gap buffer */
+static int gb_load_file(gap_buffer_t *gb, FILE *fp)
+{
+    /* Clear existing content */
+    gb->gap = gb->buffer;
+    gb->egap = gb->ebuffer;
+
+    char buf[4096];
+    size_t nread;
+
+    while ((nread = fread(buf, 1, sizeof(buf), fp)) > 0) {
+        if (!gb_insert(gb, gb_length(gb), buf, nread)) {
+            return 0; /* Insert failed */
+        }
+    }
+
+    gb->modified = 0; /* Just loaded, not modified */
+    return 1;
+}
+
+/* ============================================================================
+ * Undo/Redo Implementation
+ * ============================================================================
+ * Track changes to enable undo (Ctrl-Z) and redo (Ctrl-R) functionality
+ */
+
+typedef enum { UNDO_INSERT, UNDO_DELETE, UNDO_REPLACE } UndoType;
+
+typedef struct UndoNode {
+    UndoType type;
+    size_t pos; /* Position where change occurred */
+    size_t len; /* Length of text */
+    char *text; /* Text that was inserted/deleted */
+    struct UndoNode *next;
+    struct UndoNode *prev;
+} UndoNode;
+
+typedef struct {
+    UndoNode *current; /* Current position in undo history */
+    UndoNode *head;    /* First undo node */
+    UndoNode *tail;    /* Last undo node */
+    int max_undos;     /* Maximum number of undo levels */
+    int count;         /* Current number of undo nodes */
+} UndoStack;
+
+#define MAX_UNDO_LEVELS 100
+
+/* Initialize undo stack */
+static UndoStack *undo_init(int max_levels)
+{
+    UndoStack *stack = malloc(sizeof(UndoStack));
+    if (!stack)
+        return NULL;
+
+    stack->head = NULL;
+    stack->tail = NULL;
+    stack->current = NULL;
+    stack->max_undos = max_levels;
+    stack->count = 0;
+
+    return stack;
+}
+
+/* Free a single undo node */
+static void undo_free_node(UndoNode *node)
+{
+    if (node) {
+        free(node->text);
+        free(node);
+    }
+}
+
+/* Clear redo history (called when new edit is made) */
+static void undo_clear_redo(UndoStack *stack)
+{
+    if (!stack || !stack->current)
+        return;
+
+    /* Remove all nodes after current */
+    UndoNode *node = stack->current->next;
+    while (node) {
+        UndoNode *next = node->next;
+        undo_free_node(node);
+        stack->count--;
+        node = next;
+    }
+
+    /* Update tail */
+    stack->tail = stack->current;
+    if (stack->tail) {
+        stack->tail->next = NULL;
+    }
+}
+
+/* Add a new undo operation */
+static void undo_push(UndoStack *stack,
+                      UndoType type,
+                      size_t pos,
+                      const char *text,
+                      size_t len)
+{
+    if (!stack || !text || len == 0)
+        return;
+
+    /* Clear any redo history */
+    undo_clear_redo(stack);
+
+    /* Create new node */
+    UndoNode *node = malloc(sizeof(UndoNode));
+    if (!node)
+        return;
+
+    node->type = type;
+    node->pos = pos;
+    node->len = len;
+    node->text = malloc(len + 1);
+    if (!node->text) {
+        free(node);
+        return;
+    }
+    memcpy(node->text, text, len);
+    node->text[len] = '\0';
+
+    /* Link node into list */
+    node->prev = stack->current;
+    node->next = NULL;
+
+    if (stack->current) {
+        stack->current->next = node;
+    } else {
+        stack->head = node;
+    }
+
+    stack->tail = node;
+    stack->current = node;
+    stack->count++;
+
+    /* Remove oldest if we exceed max */
+    while (stack->count > stack->max_undos && stack->head) {
+        UndoNode *old = stack->head;
+        stack->head = old->next;
+        if (stack->head) {
+            stack->head->prev = NULL;
+        }
+        undo_free_node(old);
+        stack->count--;
+    }
+}
+
+/* Forward declarations - will be defined later */
+static void gb_sync_to_rows(gap_buffer_t *gb);
+
+/* Perform undo operation */
+static int undo_perform(gap_buffer_t *gb, UndoStack *stack)
+{
+    if (!gb || !stack || !stack->current) {
+        return 0; /* Nothing to undo */
+    }
+
+    UndoNode *node = stack->current;
+
+    /* Reverse the operation WITHOUT adding to undo stack again */
+    switch (node->type) {
+    case UNDO_INSERT:
+        /* Was an insert, so delete it */
+        gb_delete(gb, node->pos, node->len);
+        break;
+
+    case UNDO_DELETE:
+        /* Was a delete, so insert it back */
+        gb_insert(gb, node->pos, node->text, node->len);
+        break;
+
+    case UNDO_REPLACE:
+        /* For replace, we need the old text (stored in next node) */
+        /* For now, treat as delete + insert */
+        gb_delete(gb, node->pos, node->len);
+        if (node->prev && node->prev->type == UNDO_DELETE) {
+            gb_insert(gb, node->pos, node->prev->text, node->prev->len);
+        }
+        break;
+    }
+
+    /* Move current pointer back */
+    stack->current = node->prev;
+
+    /* Sync gap buffer back to rows for display */
+    gb_sync_to_rows(gb);
+
+    /* Mark as modified if we have undo history */
+    gb->modified = (stack->current != NULL) ? 1 : 0;
+
+    return 1;
+}
+
+/* Perform redo operation */
+static int undo_redo(gap_buffer_t *gb, UndoStack *stack)
+{
+    if (!gb || !stack) {
+        return 0;
+    }
+
+    /* Find the node to redo */
+    UndoNode *node = NULL;
+    if (stack->current) {
+        node = stack->current->next;
+    } else if (stack->head) {
+        node = stack->head;
+    }
+
+    if (!node) {
+        return 0; /* Nothing to redo */
+    }
+
+    /* Re-apply the operation */
+    switch (node->type) {
+    case UNDO_INSERT:
+        /* Re-insert the text */
+        gb_insert(gb, node->pos, node->text, node->len);
+        break;
+
+    case UNDO_DELETE:
+        /* Re-delete the text */
+        gb_delete(gb, node->pos, node->len);
+        break;
+
+    case UNDO_REPLACE:
+        /* Re-replace the text */
+        gb_delete(gb, node->pos, node->len);
+        gb_insert(gb, node->pos, node->text, node->len);
+        break;
+    }
+
+    /* Move current pointer forward */
+    stack->current = node;
+
+    /* Sync gap buffer back to rows for display */
+    gb_sync_to_rows(gb);
+
+    return 1;
+}
+
+/* Track insertion for undo (wrapper for gb_insert) */
+static int gb_insert_with_undo(gap_buffer_t *gb,
+                               UndoStack *undo,
+                               size_t pos,
+                               const char *text,
+                               size_t len)
+{
+    if (!gb_insert(gb, pos, text, len)) {
+        return 0;
+    }
+
+    if (undo) {
+        undo_push(undo, UNDO_INSERT, pos, text, len);
+    }
+
+    return 1;
+}
+
+/* Track deletion for undo (wrapper for gb_delete) */
+static void gb_delete_with_undo(gap_buffer_t *gb,
+                                UndoStack *undo,
+                                size_t pos,
+                                size_t len)
+{
+    if (undo && len > 0 && pos < gb_length(gb)) {
+        /* Save the text being deleted */
+        char *text = malloc(len + 1);
+        if (text) {
+            size_t i;
+            for (i = 0; i < len && pos + i < gb_length(gb); i++) {
+                int ch = gb_get_char(gb, pos + i);
+                if (ch == -1)
+                    break;
+                text[i] = ch;
+            }
+            text[i] = '\0';
+
+            if (i > 0) {
+                undo_push(undo, UNDO_DELETE, pos, text, i);
+            }
+            free(text);
+        }
+    }
+
+    gb_delete(gb, pos, len);
+}
+
+/* Old row-based structure - will be phased out */
 typedef struct {
     int idx;
     int size;
@@ -142,13 +593,18 @@ struct {
     char *copied_char_buffer;
     editor_syntax *syntax;
     struct termios orig_termios;
+    /* Gap buffer and undo/redo support */
+    gap_buffer_t *gb;      /* Gap buffer */
+    UndoStack *undo_stack; /* Undo/redo stack */
+    size_t gb_cursor_pos;  /* Cursor position in gap buffer */
 } ec = {
     /* editor config */
     .cursor_x = 0,         .cursor_y = 0,        .render_x = 0,
     .row_offset = 0,       .col_offset = 0,      .num_rows = 0,
     .row = NULL,           .modified = 0,        .file_name = NULL,
     .status_msg[0] = '\0', .status_msg_time = 0, .copied_char_buffer = NULL,
-    .syntax = NULL,
+    .syntax = NULL,        .gb = NULL,           .undo_stack = NULL,
+    .gb_cursor_pos = 0,
 };
 
 typedef struct {
@@ -196,7 +652,6 @@ editor_syntax DB[] = {
 
 #define DB_ENTRIES (sizeof(DB) / sizeof(DB[0]))
 
-static void set_status_message(const char *msg, ...);
 static char *prompt(const char *msg, void (*callback)(char *, int));
 
 static void clear_screen()
@@ -694,6 +1149,23 @@ static void row_insert_char(editor_row *row, int at, int c)
 
 static void newline()
 {
+    /* Track newline in gap buffer for undo */
+    if (ec.gb && ec.undo_stack) {
+        /* Calculate position in gap buffer */
+        size_t pos = 0;
+        for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
+            pos += ec.row[i].size + 1; /* +1 for newline */
+        }
+        pos += ec.cursor_x;
+
+        /* Insert newline character into gap buffer */
+        char nl = '\n';
+        if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, &nl, 1)) {
+            ec.gb_cursor_pos = pos + 1;
+        }
+    }
+
+    /* Update row structure for display */
     if (ec.cursor_x == 0)
         insert_row(ec.cursor_y, "", 0);
     else {
@@ -707,6 +1179,84 @@ static void newline()
     }
     ec.cursor_y++;
     ec.cursor_x = 0;
+    ec.modified++;
+}
+
+/* Convert gap buffer back to rows for display */
+static void gb_sync_to_rows(gap_buffer_t *gb)
+{
+    if (!gb)
+        return;
+
+    /* Save cursor position */
+    int saved_cursor_y = ec.cursor_y;
+    int saved_cursor_x = ec.cursor_x;
+
+    /* Clear existing rows */
+    for (int i = 0; i < ec.num_rows; i++) {
+        free(ec.row[i].chars);
+        free(ec.row[i].render);
+        free(ec.row[i].highlight);
+    }
+    free(ec.row);
+    ec.row = NULL;
+    ec.num_rows = 0;
+
+    /* Convert gap buffer to rows */
+    size_t pos = 0;
+    size_t len = gb_length(gb);
+
+    while (pos < len) {
+        size_t line_start = pos;
+        size_t line_end = pos;
+
+        /* Find end of line */
+        while (line_end < len && gb_get_char(gb, line_end) != '\n') {
+            line_end++;
+        }
+
+        /* Extract line */
+        size_t line_len = line_end - line_start;
+        char *line = malloc(line_len + 1);
+        if (line) {
+            for (size_t i = 0; i < line_len; i++) {
+                line[i] = gb_get_char(gb, line_start + i);
+            }
+            line[line_len] = '\0';
+
+            insert_row(ec.num_rows, line, line_len);
+            free(line);
+        }
+
+        /* Move past newline */
+        pos = line_end;
+        if (pos < len && gb_get_char(gb, pos) == '\n') {
+            pos++;
+        }
+    }
+
+    /* Ensure at least one row */
+    if (ec.num_rows == 0) {
+        insert_row(0, "", 0);
+    }
+
+    /* Update modified flag from gap buffer */
+    ec.modified = gb->modified;
+
+    /* Restore cursor position within bounds */
+    if (saved_cursor_y >= ec.num_rows) {
+        ec.cursor_y = ec.num_rows - 1;
+    } else {
+        ec.cursor_y = saved_cursor_y;
+    }
+
+    if (ec.cursor_y >= 0 && ec.cursor_y < ec.num_rows) {
+        if (saved_cursor_x > ec.row[ec.cursor_y].size) {
+            ec.cursor_x = ec.row[ec.cursor_y].size;
+        } else {
+            ec.cursor_x = saved_cursor_x;
+        }
+    }
 }
 
 static void row_delete_char(editor_row *row, int at)
@@ -727,6 +1277,25 @@ static void row_delete_char(editor_row *row, int at)
 
 static void insert_char(int c)
 {
+    if (ec.gb && ec.undo_stack) {
+        /* Use gap buffer with undo tracking */
+        char ch = c;
+        size_t pos = ec.gb_cursor_pos;
+
+        /* For now, calculate position based on cursor */
+        pos = 0;
+        for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
+            pos += ec.row[i].size + 1; /* +1 for newline */
+        }
+        pos += ec.cursor_x;
+
+        if (gb_insert_with_undo(ec.gb, ec.undo_stack, pos, &ch, 1)) {
+            ec.gb_cursor_pos = pos + 1;
+            ec.modified = 1;
+        }
+    }
+
+    /* Always update row structure for immediate display */
     if (ec.cursor_y == ec.num_rows)
         insert_row(ec.num_rows, "", 0);
     row_insert_char(&ec.row[ec.cursor_y], ec.cursor_x, c);
@@ -739,7 +1308,37 @@ static void delete_char()
         return;
     if (ec.cursor_x == 0 && ec.cursor_y == 0)
         return;
+
     editor_row *row = &ec.row[ec.cursor_y];
+
+    if (ec.gb && ec.undo_stack) {
+        /* Use gap buffer with undo tracking */
+        size_t pos = 0;
+        for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++) {
+            pos += ec.row[i].size + 1; /* +1 for newline */
+        }
+
+        if (ec.cursor_x > 0) {
+            /* Delete character before cursor */
+            const char *prev =
+                utf8_prev_char(row->chars, row->chars + ec.cursor_x);
+            int prev_pos = prev - row->chars;
+            int char_len = ec.cursor_x - prev_pos;
+
+            gb_delete_with_undo(ec.gb, ec.undo_stack, pos + prev_pos, char_len);
+            ec.gb_cursor_pos = pos + prev_pos;
+        } else {
+            /* Delete newline - join with previous line */
+            if (ec.cursor_y > 0) {
+                pos--; /* Point to previous line's newline */
+                gb_delete_with_undo(ec.gb, ec.undo_stack, pos, 1);
+                ec.gb_cursor_pos = pos;
+            }
+        }
+        ec.modified = 1;
+    }
+
+    /* Also update row structure for display */
     if (ec.cursor_x > 0) {
         // Move cursor to previous character boundary before deleting
         const char *prev = utf8_prev_char(row->chars, row->chars + ec.cursor_x);
@@ -779,6 +1378,20 @@ static void open_file(char *file_name)
     FILE *file = fopen(file_name, "r+");
     if (!file)
         panic("Failed to open the file");
+
+    /* Load file into gap buffer if available */
+    if (ec.gb) {
+        /* Rewind file to beginning */
+        fseek(file, 0, SEEK_SET);
+        gb_load_file(ec.gb, file);
+
+        /* Don't create initial undo state - file content is the baseline */
+        /* Undo stack starts empty, only user edits are tracked */
+
+        /* Rewind again for row loading */
+        fseek(file, 0, SEEK_SET);
+    }
+
     char *line = NULL;
     size_t line_cap = 0;
     ssize_t line_len;
@@ -1235,7 +1848,30 @@ static void process_key()
         paste();
         break;
     case CTRL_('z'):
-        raise(SIGSTOP);
+        /* Undo last operation */
+        if (ec.gb && ec.undo_stack) {
+            if (undo_perform(ec.gb, ec.undo_stack)) {
+                ec.modified = ec.gb->modified;
+                set_status_message("Undo performed");
+            } else {
+                set_status_message("Nothing to undo");
+            }
+        } else {
+            set_status_message("Undo system not initialized");
+        }
+        break;
+    case CTRL_('r'):
+        /* Redo last undone operation */
+        if (ec.gb && ec.undo_stack) {
+            if (undo_redo(ec.gb, ec.undo_stack)) {
+                ec.modified = ec.gb->modified;
+                set_status_message("Redo performed");
+            } else {
+                set_status_message("Nothing to redo");
+            }
+        } else {
+            set_status_message("Undo system not initialized");
+        }
         break;
     case ARROW_UP:
     case ARROW_DOWN:
@@ -1300,6 +1936,12 @@ static void init_editor()
     update_window_size();
     signal(SIGWINCH, handle_sigwinch);
     signal(SIGCONT, handle_sigcont);
+
+    /* Initialize gap buffer and undo/redo - always enabled */
+    ec.gb = gb_init(GB_INITIAL_SIZE);
+    if (ec.gb) {
+        ec.undo_stack = undo_init(MAX_UNDO_LEVELS);
+    }
 }
 
 int main(int argc, char *argv[])
@@ -1310,7 +1952,7 @@ int main(int argc, char *argv[])
     enable_raw_mode();
     set_status_message(
         "Mazu Editor | ^Q Exit | ^S Save | ^F Search | "
-        "^C Copy | ^X Cut | ^V Paste | ^Z Suspend");
+        "^Z Undo | ^R Redo | ^C Copy | ^X Cut | ^V Paste");
     refresh_screen();
     while (1) {
         process_key();

@@ -10,7 +10,8 @@ Command line: (`filename` is optional)
 Supported keys:
 * Ctrl-S: Save
 * Ctrl-Q: Quit
-* Ctrl-Z: Suspend
+* Ctrl-Z: Undo
+* Ctrl-R: Redo
 * Ctrl-F: Find string in file
     - ESC to cancel search, Enter to exit search, arrows to navigate
 * Ctrl-C: Copy line
