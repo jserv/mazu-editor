@@ -196,15 +196,15 @@ editor_syntax DB[] = {
 
 #define DB_ENTRIES (sizeof(DB) / sizeof(DB[0]))
 
-void set_status_message(const char *msg, ...);
-char *prompt(char *msg, void (*callback)(char *, int));
+static void set_status_message(const char *msg, ...);
+static char *prompt(const char *msg, void (*callback)(char *, int));
 
-void clear_screen()
+static void clear_screen()
 {
     write(STDOUT_FILENO, "\x1b[2J", 4);
 }
 
-void panic(const char *s)
+static void panic(const char *s)
 {
     clear_screen();
     perror(s);
@@ -212,19 +212,19 @@ void panic(const char *s)
     exit(1);
 }
 
-void open_buffer()
+static void open_buffer()
 {
     if (write(STDOUT_FILENO, "\x1b[?47h", 6) == -1)
         panic("Error changing terminal buffer");
 }
 
-void disable_raw_mode()
+static void disable_raw_mode()
 {
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &ec.orig_termios) == -1)
         panic("Failed to disable raw mode");
 }
 
-void enable_raw_mode()
+static void enable_raw_mode()
 {
     if (tcgetattr(STDIN_FILENO, &ec.orig_termios) == -1)
         panic("Failed to get current terminal state");
@@ -241,7 +241,7 @@ void enable_raw_mode()
         panic("Failed to set raw mode");
 }
 
-int read_key()
+static int read_key()
 {
     int nread;
     char c;
@@ -303,7 +303,7 @@ int read_key()
     return c;
 }
 
-int get_window_size(int *screen_rows, int *screen_cols)
+static int get_window_size(int *screen_rows, int *screen_cols)
 {
     struct winsize ws;
     if ((ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) || (ws.ws_col == 0))
@@ -313,14 +313,14 @@ int get_window_size(int *screen_rows, int *screen_cols)
     return 0;
 }
 
-void update_window_size()
+static void update_window_size()
 {
     if (get_window_size(&ec.screen_rows, &ec.screen_cols) == -1)
         panic("Failed to get window size");
     ec.screen_rows -= 2;
 }
 
-void close_buffer()
+static void close_buffer()
 {
     if (write(STDOUT_FILENO, "\x1b[?9l", 5) == -1 ||
         write(STDOUT_FILENO, "\x1b[?47l", 6) == -1)
@@ -328,12 +328,12 @@ void close_buffer()
     clear_screen();
 }
 
-bool is_token_separator(int c)
+static bool is_token_separator(int c)
 {
     return isspace(c) || (c == '\0') || strchr(",.()+-/*=~%<>[]:;", c);
 }
 
-bool is_part_of_number(int c)
+static bool is_part_of_number(int c)
 {
     return c == '.' || c == 'x' || c == 'a' || c == 'b' || c == 'c' ||
            c == 'd' || c == 'e' || c == 'f' || c == 'A' || c == 'X' ||
@@ -341,7 +341,7 @@ bool is_part_of_number(int c)
            c == 'h' || c == 'H';
 }
 
-void highlight(editor_row *row)
+static void highlight(editor_row *row)
 {
     row->highlight = realloc(row->highlight, row->render_size);
     memset(row->highlight, NORMAL, row->render_size);
@@ -451,7 +451,7 @@ void highlight(editor_row *row)
 }
 
 /* Reference: https://misc.flogisoft.com/bash/tip_colors_and_formatting */
-int token_to_color(int highlight)
+static int token_to_color(int highlight)
 {
     switch (highlight) {
     case SL_COMMENT:
@@ -474,7 +474,7 @@ int token_to_color(int highlight)
     }
 }
 
-void select_highlight()
+static void select_highlight()
 {
     ec.syntax = NULL;
     if (!ec.file_name)
@@ -496,7 +496,7 @@ void select_highlight()
     }
 }
 
-int row_cursorx_to_renderx(editor_row *row, int cursor_x)
+static int row_cursorx_to_renderx(editor_row *row, int cursor_x)
 {
     int render_x = 0;
     int byte_pos = 0;
@@ -515,7 +515,7 @@ int row_cursorx_to_renderx(editor_row *row, int cursor_x)
     return render_x;
 }
 
-int row_renderx_to_cursorx(editor_row *row, int render_x)
+static int row_renderx_to_cursorx(editor_row *row, int render_x)
 {
     int cur_render_x = 0;
     int byte_pos = 0;
@@ -544,7 +544,7 @@ int row_renderx_to_cursorx(editor_row *row, int render_x)
     return byte_pos;
 }
 
-void update_row(editor_row *row)
+static void update_row(editor_row *row)
 {
     int tabs = 0;
     int wide_chars = 0;
@@ -591,7 +591,7 @@ void update_row(editor_row *row)
     highlight(row);
 }
 
-void insert_row(int at, char *s, size_t line_len)
+static void insert_row(int at, char *s, size_t line_len)
 {
     if ((at < 0) || (at > ec.num_rows))
         return;
@@ -614,14 +614,14 @@ void insert_row(int at, char *s, size_t line_len)
     ec.modified++;
 }
 
-void free_row(editor_row *row)
+static void free_row(editor_row *row)
 {
     free(row->render);
     free(row->chars);
     free(row->highlight);
 }
 
-void delete_row(int at)
+static void delete_row(int at)
 {
     if (at < 0 || at >= ec.num_rows)
         return;
@@ -634,7 +634,7 @@ void delete_row(int at)
     ec.modified++;
 }
 
-void row_append(editor_row *row, char *s, size_t len)
+static void row_append(editor_row *row, char *s, size_t len)
 {
     row->chars = realloc(row->chars, row->size + len + 1);
     memcpy(&row->chars[row->size], s, len);
@@ -644,15 +644,19 @@ void row_append(editor_row *row, char *s, size_t len)
     ec.modified++;
 }
 
-void copy(int cut)
+static void copy(int cut)
 {
-    ec.copied_char_buffer =
-        realloc(ec.copied_char_buffer, strlen(ec.row[ec.cursor_y].chars) + 1);
-    strcpy(ec.copied_char_buffer, ec.row[ec.cursor_y].chars);
+    size_t len = strlen(ec.row[ec.cursor_y].chars) + 1;
+    ec.copied_char_buffer = realloc(ec.copied_char_buffer, len);
+    if (!ec.copied_char_buffer) {
+        set_status_message("Memory allocation failed");
+        return;
+    }
+    snprintf(ec.copied_char_buffer, len, "%s", ec.row[ec.cursor_y].chars);
     set_status_message(cut ? "Text cut" : "Text copied");
 }
 
-void cut()
+static void cut()
 {
     copy(-1);
     delete_row(ec.cursor_y);
@@ -663,7 +667,7 @@ void cut()
     ec.cursor_x = ec.cursor_y == ec.num_rows ? 0 : ec.row[ec.cursor_y].size;
 }
 
-void paste()
+static void paste()
 {
     if (!ec.copied_char_buffer)
         return;
@@ -676,7 +680,7 @@ void paste()
     ec.cursor_x += strlen(ec.copied_char_buffer);
 }
 
-void row_insert_char(editor_row *row, int at, int c)
+static void row_insert_char(editor_row *row, int at, int c)
 {
     if ((at < 0) || (at > row->size))
         at = row->size;
@@ -688,7 +692,7 @@ void row_insert_char(editor_row *row, int at, int c)
     ec.modified++;
 }
 
-void newline()
+static void newline()
 {
     if (ec.cursor_x == 0)
         insert_row(ec.cursor_y, "", 0);
@@ -705,7 +709,7 @@ void newline()
     ec.cursor_x = 0;
 }
 
-void row_delete_char(editor_row *row, int at)
+static void row_delete_char(editor_row *row, int at)
 {
     if ((at < 0) || (at >= row->size))
         return;
@@ -721,7 +725,7 @@ void row_delete_char(editor_row *row, int at)
     ec.modified++;
 }
 
-void insert_char(int c)
+static void insert_char(int c)
 {
     if (ec.cursor_y == ec.num_rows)
         insert_row(ec.num_rows, "", 0);
@@ -729,7 +733,7 @@ void insert_char(int c)
     ec.cursor_x++;
 }
 
-void delete_char()
+static void delete_char()
 {
     if (ec.cursor_y == ec.num_rows)
         return;
@@ -750,7 +754,7 @@ void delete_char()
     }
 }
 
-char *rows_tostring(int *buf_len)
+static char *rows_tostring(int *buf_len)
 {
     int total_len = 0;
     for (int j = 0; j < ec.num_rows; j++)
@@ -767,7 +771,7 @@ char *rows_tostring(int *buf_len)
     return buf;
 }
 
-void open_file(char *file_name)
+static void open_file(char *file_name)
 {
     free(ec.file_name);
     ec.file_name = strdup(file_name);
@@ -789,7 +793,7 @@ void open_file(char *file_name)
     ec.modified = 0;
 }
 
-void save_file()
+static void save_file()
 {
     if (!ec.file_name) {
         ec.file_name = prompt("Save as: %s (ESC to cancel)", NULL);
@@ -819,7 +823,7 @@ void save_file()
     set_status_message("Error: %s", strerror(errno));
 }
 
-void search_cb(char *query, int key)
+static void search_cb(char *query, int key)
 {
     static int last_match = -1;
     static int direction = 1;
@@ -861,14 +865,16 @@ void search_cb(char *query, int key)
             ec.row_offset = ec.num_rows;
             saved_highlight_line = current;
             saved_hightlight = malloc(row->render_size);
-            memcpy(saved_hightlight, row->highlight, row->render_size);
+            if (saved_hightlight) {
+                memcpy(saved_hightlight, row->highlight, row->render_size);
+            }
             memset(&row->highlight[match - row->render], MATCH, strlen(query));
             break;
         }
     }
 }
 
-void search()
+static void search()
 {
     int saved_cursor_x = ec.cursor_x;
     int saved_cursor_y = ec.cursor_y;
@@ -885,7 +891,7 @@ void search()
     }
 }
 
-void buf_append(editor_buf *eb, const char *s, int len)
+static void buf_append(editor_buf *eb, const char *s, int len)
 {
     char *new = realloc(eb->buf, eb->len + len);
     if (!new)
@@ -895,12 +901,12 @@ void buf_append(editor_buf *eb, const char *s, int len)
     eb->len += len;
 }
 
-void buf_free(editor_buf *eb)
+static void buf_free(editor_buf *eb)
 {
     free(eb->buf);
 }
 
-void scroll()
+static void scroll()
 {
     ec.render_x = 0;
     if (ec.cursor_y < ec.num_rows)
@@ -915,13 +921,14 @@ void scroll()
         ec.col_offset = ec.render_x - ec.screen_cols + 1;
 }
 
-void draw_statusbar(editor_buf *eb)
+static void draw_statusbar(editor_buf *eb)
 {
     time_t now = time(NULL);
+    struct tm currtime_buf;
     struct tm *currtime;
     buf_append(eb, "\x1b[100m", 6); /* Dark gray */
     char status[80], r_status[80];
-    currtime = localtime(&now);
+    currtime = localtime_r(&now, &currtime_buf);
     int len = snprintf(status, sizeof(status), "  File: %.20s %s",
                        ec.file_name ? ec.file_name : "< New >",
                        ec.modified ? "(modified)" : "");
@@ -948,7 +955,7 @@ void draw_statusbar(editor_buf *eb)
     buf_append(eb, "\r\n", 2);
 }
 
-void draw_messagebar(editor_buf *eb)
+static void draw_messagebar(editor_buf *eb)
 {
     buf_append(eb, "\x1b[93m\x1b[44m\x1b[K", 13);
     int msg_len = strlen(ec.status_msg);
@@ -960,7 +967,7 @@ void draw_messagebar(editor_buf *eb)
     buf_append(eb, "\x1b[0m", 4);
 }
 
-void set_status_message(const char *msg, ...)
+static void set_status_message(const char *msg, ...)
 {
     va_list args;
     va_start(args, msg);
@@ -969,7 +976,7 @@ void set_status_message(const char *msg, ...)
     ec.status_msg_time = time(NULL);
 }
 
-void draw_rows(editor_buf *eb)
+static void draw_rows(editor_buf *eb)
 {
     for (int y = 0; y < ec.screen_rows; y++) {
         int file_row = y + ec.row_offset;
@@ -982,8 +989,7 @@ void draw_rows(editor_buf *eb)
             if (len > ec.screen_cols)
                 len = ec.screen_cols;
             char *c = &ec.row[file_row].render[ec.col_offset];
-            unsigned char *highlight =
-                &ec.row[file_row].highlight[ec.col_offset];
+            unsigned char *hl = &ec.row[file_row].highlight[ec.col_offset];
             int current_color = -1;
             for (int j = 0; j < len; j++) {
                 if (iscntrl(c[j])) {
@@ -997,14 +1003,14 @@ void draw_rows(editor_buf *eb)
                                              current_color);
                         buf_append(eb, buf, c_len);
                     }
-                } else if (highlight[j] == NORMAL) {
+                } else if (hl[j] == NORMAL) {
                     if (current_color != -1) {
                         buf_append(eb, "\x1b[39m", 5);
                         current_color = -1;
                     }
                     buf_append(eb, &c[j], 1);
                 } else {
-                    int color = token_to_color(highlight[j]);
+                    int color = token_to_color(hl[j]);
                     if (color != current_color) {
                         current_color = color;
                         char buf[16];
@@ -1022,7 +1028,7 @@ void draw_rows(editor_buf *eb)
     }
 }
 
-void refresh_screen()
+static void refresh_screen()
 {
     scroll();
     editor_buf eb = {NULL, 0};
@@ -1040,7 +1046,7 @@ void refresh_screen()
     buf_free(&eb);
 }
 
-void handle_sigwinch()
+static void handle_sigwinch()
 {
     update_window_size();
     if (ec.cursor_y > ec.screen_rows)
@@ -1050,7 +1056,7 @@ void handle_sigwinch()
     refresh_screen();
 }
 
-void handle_sigcont()
+static void handle_sigcont()
 {
     disable_raw_mode();
     open_buffer();
@@ -1058,10 +1064,12 @@ void handle_sigcont()
     refresh_screen();
 }
 
-char *prompt(char *msg, void (*callback)(char *, int))
+static char *prompt(const char *msg, void (*callback)(char *, int))
 {
     size_t buf_size = 128;
     char *buf = malloc(buf_size);
+    if (!buf)
+        return NULL;
     size_t buf_len = 0;
     buf[0] = '\0';
     while (1) {
@@ -1103,7 +1111,7 @@ char *prompt(char *msg, void (*callback)(char *, int))
     }
 }
 
-void move_cursor(int key)
+static void move_cursor(int key)
 {
     editor_row *row =
         (ec.cursor_y >= ec.num_rows) ? NULL : &ec.row[ec.cursor_y];
@@ -1150,7 +1158,7 @@ void move_cursor(int key)
         ec.cursor_x = row_len;
 }
 
-void process_key()
+static void process_key()
 {
     static int indent_level = 0;
     int c = read_key();
@@ -1245,7 +1253,7 @@ void process_key()
 }
 
 
-void init_editor()
+static void init_editor()
 {
     update_window_size();
     signal(SIGWINCH, handle_sigwinch);
