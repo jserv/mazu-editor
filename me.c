@@ -628,7 +628,6 @@ static void gb_delete_with_undo(gap_buffer_t *gb,
     gb_delete(gb, pos, len);
 }
 
-/* Old row-based structure - will be phased out */
 typedef struct {
     int idx;
     int size;
@@ -637,8 +636,9 @@ typedef struct {
     char *render;
     unsigned char *highlight;
     bool hl_open_comment;
-} editor_row;
+} editor_row_t;
 
+/* Syntax highlighting structure */
 typedef struct {
     char *file_type;
     char **file_match;
@@ -646,37 +646,47 @@ typedef struct {
     char *sl_comment_start;                  /* single line */
     char *ml_comment_start, *ml_comment_end; /* multiple lines */
     int flags;
-} editor_syntax;
+} editor_syntax_t;
 
+/* Editor config structure */
 struct {
     int cursor_x, cursor_y, render_x;
     int row_offset, col_offset;
     int screen_rows, screen_cols;
     int num_rows;
-    editor_row *row;
+    editor_row_t *row;
     bool modified;
     char *file_name;
     char status_msg[90];
     time_t status_msg_time;
     char *copied_char_buffer;
-    editor_syntax *syntax;
+    editor_syntax_t *syntax;
     struct termios orig_termios;
     /* Gap buffer and undo/redo support */
-    gap_buffer_t *gb;         /* Gap buffer */
-    undo_stack_t *undo_stack; /* Undo/redo stack */
+    gap_buffer_t *gb;
+    undo_stack_t *undo_stack;
 } ec = {
-    /* editor config */
-    .cursor_x = 0,         .cursor_y = 0,        .render_x = 0,
-    .row_offset = 0,       .col_offset = 0,      .num_rows = 0,
-    .row = NULL,           .modified = false,    .file_name = NULL,
-    .status_msg[0] = '\0', .status_msg_time = 0, .copied_char_buffer = NULL,
-    .syntax = NULL,        .gb = NULL,           .undo_stack = NULL,
+    .cursor_x = 0,
+    .cursor_y = 0,
+    .render_x = 0,
+    .row_offset = 0,
+    .col_offset = 0,
+    .num_rows = 0,
+    .row = NULL,
+    .modified = false,
+    .file_name = NULL,
+    .status_msg[0] = '\0',
+    .status_msg_time = 0,
+    .copied_char_buffer = NULL,
+    .syntax = NULL,
+    .gb = NULL,
+    .undo_stack = NULL,
 };
 
 typedef struct {
     char *buf;
     int len;
-} editor_buf;
+} editor_buf_t;
 
 /* clang-format off */
 enum editor_key {
@@ -711,7 +721,7 @@ char *C_keywords[] = {
     "signed|", "void|",    "bool|",   NULL,
 };
 
-editor_syntax DB[] = {
+editor_syntax_t DB[] = {
     {
         "c",
         C_extensions,
@@ -869,7 +879,7 @@ static bool is_part_of_number(int c)
            c == 'h' || c == 'H';
 }
 
-static void highlight(editor_row *row)
+static void highlight(editor_row_t *row)
 {
     row->highlight = realloc(row->highlight, row->render_size);
     memset(row->highlight, NORMAL, row->render_size);
@@ -1008,7 +1018,7 @@ static void select_highlight()
     if (!ec.file_name)
         return;
     for (size_t j = 0; j < DB_ENTRIES; j++) {
-        editor_syntax *es = &DB[j];
+        editor_syntax_t *es = &DB[j];
         for (size_t i = 0; es->file_match[i]; i++) {
             char *p = strstr(ec.file_name, es->file_match[i]);
             if (!p)
@@ -1024,7 +1034,7 @@ static void select_highlight()
     }
 }
 
-static int row_cursorx_to_renderx(editor_row *row, int cursor_x)
+static int row_cursorx_to_renderx(editor_row_t *row, int cursor_x)
 {
     int render_x = 0;
     int byte_pos = 0;
@@ -1043,7 +1053,7 @@ static int row_cursorx_to_renderx(editor_row *row, int cursor_x)
     return render_x;
 }
 
-static int row_renderx_to_cursorx(editor_row *row, int render_x)
+static int row_renderx_to_cursorx(editor_row_t *row, int render_x)
 {
     int cur_render_x = 0;
     int byte_pos = 0;
@@ -1072,7 +1082,7 @@ static int row_renderx_to_cursorx(editor_row *row, int render_x)
     return byte_pos;
 }
 
-static void update_row(editor_row *row)
+static void update_row(editor_row_t *row)
 {
     int tabs = 0;
     int wide_chars = 0;
@@ -1123,9 +1133,9 @@ static void insert_row(int at, char *s, size_t line_len)
 {
     if ((at < 0) || (at > ec.num_rows))
         return;
-    ec.row = realloc(ec.row, sizeof(editor_row) * (ec.num_rows + 1));
+    ec.row = realloc(ec.row, sizeof(editor_row_t) * (ec.num_rows + 1));
     memmove(&ec.row[at + 1], &ec.row[at],
-            sizeof(editor_row) * (ec.num_rows - at));
+            sizeof(editor_row_t) * (ec.num_rows - at));
     for (int j = at + 1; j <= ec.num_rows; j++)
         ec.row[j].idx++;
     ec.row[at].idx = at;
@@ -1177,14 +1187,14 @@ static void cut()
     gb_delete_with_undo(ec.gb, ec.undo_stack, line_start, line_len);
 
     /* Remove row from display structure */
-    editor_row *row = &ec.row[ec.cursor_y];
+    editor_row_t *row = &ec.row[ec.cursor_y];
     free(row->render);
     free(row->chars);
     free(row->highlight);
 
     if (ec.num_rows > 1) {
         memmove(&ec.row[ec.cursor_y], &ec.row[ec.cursor_y + 1],
-                sizeof(editor_row) * (ec.num_rows - ec.cursor_y - 1));
+                sizeof(editor_row_t) * (ec.num_rows - ec.cursor_y - 1));
         for (int j = ec.cursor_y; j < ec.num_rows - 1; j++)
             ec.row[j].idx--;
         ec.num_rows--;
@@ -1224,7 +1234,7 @@ static void paste()
         /* Update row directly */
         if (ec.cursor_y == ec.num_rows)
             insert_row(ec.num_rows, "", 0);
-        editor_row *row = &ec.row[ec.cursor_y];
+        editor_row_t *row = &ec.row[ec.cursor_y];
         row->chars = realloc(row->chars, row->size + paste_len + 1);
         memmove(&row->chars[ec.cursor_x + paste_len], &row->chars[ec.cursor_x],
                 row->size - ec.cursor_x + 1);
@@ -1254,7 +1264,7 @@ static void newline()
         if (ec.cursor_x == 0) {
             insert_row(ec.cursor_y, "", 0);
         } else {
-            editor_row *row = &ec.row[ec.cursor_y];
+            editor_row_t *row = &ec.row[ec.cursor_y];
             insert_row(ec.cursor_y + 1, &row->chars[ec.cursor_x],
                        row->size - ec.cursor_x);
             row = &ec.row[ec.cursor_y];
@@ -1268,7 +1278,7 @@ static void newline()
     }
 }
 
-/* Convert gap buffer back to rows for display */
+/* Sync gap buffer to rows for display */
 static void gb_sync_to_rows(gap_buffer_t *gb)
 {
     if (!gb)
@@ -1395,7 +1405,7 @@ static void insert_char(int c)
         if (ec.cursor_y == ec.num_rows)
             insert_row(ec.num_rows, "", 0);
 
-        editor_row *row = &ec.row[ec.cursor_y];
+        editor_row_t *row = &ec.row[ec.cursor_y];
         row->chars = realloc(row->chars, row->size + utf8_buffer.len + 1);
         memmove(&row->chars[ec.cursor_x + utf8_buffer.len],
                 &row->chars[ec.cursor_x], row->size - ec.cursor_x + 1);
@@ -1420,7 +1430,7 @@ static void delete_char()
     if (ec.cursor_x == 0 && ec.cursor_y == 0)
         return;
 
-    editor_row *row = &ec.row[ec.cursor_y];
+    editor_row_t *row = &ec.row[ec.cursor_y];
 
     /* Calculate position in gap buffer */
     size_t pos = 0;
@@ -1451,7 +1461,7 @@ static void delete_char()
 
             /* Join lines in row structure */
             ec.cursor_x = ec.row[ec.cursor_y - 1].size;
-            editor_row *prev_row = &ec.row[ec.cursor_y - 1];
+            editor_row_t *prev_row = &ec.row[ec.cursor_y - 1];
             prev_row->chars =
                 realloc(prev_row->chars, prev_row->size + row->size + 1);
             memcpy(&prev_row->chars[prev_row->size], row->chars, row->size);
@@ -1464,7 +1474,7 @@ static void delete_char()
             free(row->chars);
             free(row->highlight);
             memmove(&ec.row[ec.cursor_y], &ec.row[ec.cursor_y + 1],
-                    sizeof(editor_row) * (ec.num_rows - ec.cursor_y - 1));
+                    sizeof(editor_row_t) * (ec.num_rows - ec.cursor_y - 1));
             for (int j = ec.cursor_y; j < ec.num_rows - 1; j++)
                 ec.row[j].idx--;
             ec.num_rows--;
@@ -1506,10 +1516,7 @@ static void open_file(char *file_name)
         fseek(file, 0, SEEK_SET);
         gb_load_file(ec.gb, file);
 
-        /* Don't create initial undo state - file content is the baseline */
-        /* Undo stack starts empty, only user edits are tracked */
-
-        /* Rewind again for row loading */
+        /* Rewind for row loading */
         fseek(file, 0, SEEK_SET);
     }
 
@@ -1610,7 +1617,7 @@ static void search_cb(char *query, int key)
             current = ec.num_rows - 1;
         else if (current == ec.num_rows)
             current = 0;
-        editor_row *row = &ec.row[current];
+        editor_row_t *row = &ec.row[current];
         char *match = strstr(row->render, query);
         if (match) {
             search_last_match = current;
@@ -1659,7 +1666,7 @@ static void search()
     }
 }
 
-static void buf_append(editor_buf *eb, const char *s, int len)
+static void buf_append(editor_buf_t *eb, const char *s, int len)
 {
     char *new = realloc(eb->buf, eb->len + len);
     if (!new)
@@ -1669,7 +1676,7 @@ static void buf_append(editor_buf *eb, const char *s, int len)
     eb->len += len;
 }
 
-static void buf_free(editor_buf *eb)
+static void buf_free(editor_buf_t *eb)
 {
     free(eb->buf);
 }
@@ -1689,7 +1696,7 @@ static void scroll()
         ec.col_offset = ec.render_x - ec.screen_cols + 1;
 }
 
-static void draw_statusbar(editor_buf *eb)
+static void draw_statusbar(editor_buf_t *eb)
 {
     time_t now = time(NULL);
     struct tm currtime_buf;
@@ -1723,7 +1730,7 @@ static void draw_statusbar(editor_buf *eb)
     buf_append(eb, "\r\n", 2);
 }
 
-static void draw_messagebar(editor_buf *eb)
+static void draw_messagebar(editor_buf_t *eb)
 {
     buf_append(eb, "\x1b[93m\x1b[44m\x1b[K", 13);
     int msg_len = strlen(ec.status_msg);
@@ -1756,7 +1763,7 @@ static void set_status_message(const char *msg, ...)
     ec.status_msg_time = time(NULL);
 }
 
-static void draw_rows(editor_buf *eb)
+static void draw_rows(editor_buf_t *eb)
 {
     for (int y = 0; y < ec.screen_rows; y++) {
         int file_row = y + ec.row_offset;
@@ -1824,7 +1831,7 @@ static void draw_rows(editor_buf *eb)
 static void refresh_screen()
 {
     scroll();
-    editor_buf eb = {NULL, 0};
+    editor_buf_t eb = {NULL, 0};
     buf_append(&eb, "\x1b[?25l", 6);
     buf_append(&eb, "\x1b[H", 3);
     draw_rows(&eb);
@@ -1977,7 +1984,7 @@ static char *prompt(const char *msg, void (*callback)(char *, int))
 
 static void move_cursor(int key)
 {
-    editor_row *row =
+    editor_row_t *row =
         (ec.cursor_y >= ec.num_rows) ? NULL : &ec.row[ec.cursor_y];
     switch (key) {
     case ARROW_LEFT:
@@ -2126,7 +2133,7 @@ static void process_key()
             goto none;
         if ((ec.cursor_x == 0) && (ec.cursor_y == 0))
             goto none;
-        editor_row *row = &ec.row[ec.cursor_y];
+        editor_row_t *row = &ec.row[ec.cursor_y];
         if ((ec.cursor_x > 0) && (row->chars[ec.cursor_x - 1] == '\t'))
             delete_char();
     none:
