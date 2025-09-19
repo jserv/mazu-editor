@@ -6,6 +6,7 @@
 #include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -17,6 +18,97 @@
 
 #define CTRL_(k) ((k) & (0x1f))
 #define TAB_STOP 4
+
+/* UTF-8 handling functions */
+
+// Get the byte length of a UTF-8 character from its first byte
+static inline int utf8_byte_length(uint8_t c)
+{
+    if ((c & 0x80) == 0)
+        return 1;  // 0xxxxxxx - ASCII
+    if ((c & 0xE0) == 0xC0)
+        return 2;  // 110xxxxx - 2 bytes
+    if ((c & 0xF0) == 0xE0)
+        return 3;  // 1110xxxx - 3 bytes
+    if ((c & 0xF8) == 0xF0)
+        return 4;  // 11110xxx - 4 bytes
+    return 1;      // Invalid UTF-8, treat as single byte
+}
+
+// Check if byte is a UTF-8 continuation byte (10xxxxxx)
+static inline int is_utf8_continuation(uint8_t c)
+{
+    return (c & 0xC0) == 0x80;
+}
+
+// Get display width of a UTF-8 character (handles wide characters)
+// Returns 2 for CJK characters, 1 for most others, 0 for combining marks
+static inline int utf8_char_width(const char *s)
+{
+    uint8_t c = (uint8_t) *s;
+
+    // ASCII
+    if (c < 0x80)
+        return 1;
+
+    // Get the Unicode codepoint
+    int codepoint = 0;
+    int len = utf8_byte_length(c);
+
+    if (len == 1) {
+        codepoint = c;
+    } else if (len == 2) {
+        codepoint = ((c & 0x1F) << 6) | (s[1] & 0x3F);
+    } else if (len == 3) {
+        codepoint = ((c & 0x0F) << 12) | ((s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+    } else if (len == 4) {
+        codepoint = ((c & 0x07) << 18) | ((s[1] & 0x3F) << 12) |
+                    ((s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+    }
+
+    // CJK Unified Ideographs and common fullwidth ranges
+    if ((codepoint >= 0x4E00 &&
+         codepoint <= 0x9FFF) ||  // CJK Unified Ideographs
+        (codepoint >= 0x3400 && codepoint <= 0x4DBF) ||  // CJK Extension A
+        (codepoint >= 0xF900 && codepoint <= 0xFAFF) ||  // CJK Compatibility
+        (codepoint >= 0x2E80 && codepoint <= 0x2EFF) ||  // CJK Radicals
+        (codepoint >= 0x3000 && codepoint <= 0x303F) ||  // CJK Punctuation
+        (codepoint >= 0xFF00 && codepoint <= 0xFFEF)) {  // Fullwidth forms
+        return 2;
+    }
+
+    // Combining marks have zero width
+    if ((codepoint >= 0x0300 &&
+         codepoint <= 0x036F) ||  // Combining Diacritical Marks
+        (codepoint >= 0x1AB0 &&
+         codepoint <= 0x1AFF) ||  // Combining Diacritical Extended
+        (codepoint >= 0x1DC0 &&
+         codepoint <= 0x1DFF)) {  // Combining Diacritical Supplement
+        return 0;
+    }
+
+    return 1;
+}
+
+// Move to the next UTF-8 character boundary
+static inline const char *utf8_next_char(const char *s)
+{
+    if (*s == '\0')
+        return s;
+    int len = utf8_byte_length((uint8_t) *s);
+    return s + len;
+}
+
+// Move to the previous UTF-8 character boundary
+static inline const char *utf8_prev_char(const char *start, const char *s)
+{
+    if (s <= start)
+        return start;
+    --s;
+    while (s > start && is_utf8_continuation((uint8_t) *s))
+        --s;
+    return s;
+}
 
 typedef struct {
     int idx;
@@ -407,10 +499,18 @@ void select_highlight()
 int row_cursorx_to_renderx(editor_row *row, int cursor_x)
 {
     int render_x = 0;
-    for (int j = 0; j < cursor_x; j++) {
-        if (row->chars[j] == '\t')
+    int byte_pos = 0;
+
+    while (byte_pos < row->size && byte_pos < cursor_x) {
+        if (row->chars[byte_pos] == '\t') {
             render_x += (TAB_STOP - 1) - (render_x % TAB_STOP);
-        render_x++;
+            render_x++;
+            byte_pos++;
+        } else {
+            int char_width = utf8_char_width(&row->chars[byte_pos]);
+            render_x += char_width;
+            byte_pos += utf8_byte_length((uint8_t) row->chars[byte_pos]);
+        }
     }
     return render_x;
 }
@@ -418,34 +518,73 @@ int row_cursorx_to_renderx(editor_row *row, int cursor_x)
 int row_renderx_to_cursorx(editor_row *row, int render_x)
 {
     int cur_render_x = 0;
-    int cursor_x;
-    for (cursor_x = 0; cursor_x < row->size; cursor_x++) {
-        if (row->chars[cursor_x] == '\t')
-            cur_render_x += (TAB_STOP - 1) - (cur_render_x % TAB_STOP);
-        cur_render_x++;
-        if (cur_render_x > render_x)
-            return cursor_x;
+    int byte_pos = 0;
+
+    while (byte_pos < row->size) {
+        int next_render_x = cur_render_x;
+
+        if (row->chars[byte_pos] == '\t') {
+            next_render_x += (TAB_STOP - 1) - (cur_render_x % TAB_STOP);
+            next_render_x++;
+        } else {
+            next_render_x += utf8_char_width(&row->chars[byte_pos]);
+        }
+
+        if (next_render_x > render_x)
+            return byte_pos;
+
+        cur_render_x = next_render_x;
+
+        if (row->chars[byte_pos] == '\t') {
+            byte_pos++;
+        } else {
+            byte_pos += utf8_byte_length((uint8_t) row->chars[byte_pos]);
+        }
     }
-    return cursor_x;
+    return byte_pos;
 }
 
 void update_row(editor_row *row)
 {
     int tabs = 0;
-    for (int j = 0; j < row->size; j++) {
-        if (row->chars[j] == '\t')
+    int wide_chars = 0;
+    int byte_pos = 0;
+
+    // Count tabs and wide characters for buffer allocation
+    while (byte_pos < row->size) {
+        if (row->chars[byte_pos] == '\t') {
             tabs++;
+            byte_pos++;
+        } else {
+            int char_len = utf8_byte_length((uint8_t) row->chars[byte_pos]);
+            int char_width = utf8_char_width(&row->chars[byte_pos]);
+            if (char_width > 1) {
+                wide_chars += (char_width - 1);
+            }
+            byte_pos += char_len;
+        }
     }
+
     free(row->render);
-    row->render = malloc(row->size + tabs * (TAB_STOP - 1) + 1);
+    // Allocate extra space for tabs and wide characters
+    row->render = malloc(row->size + tabs * (TAB_STOP - 1) + wide_chars + 1);
+
     int idx = 0;
-    for (int j = 0; j < row->size; j++) {
-        if (row->chars[j] == '\t') {
+    byte_pos = 0;
+
+    while (byte_pos < row->size) {
+        if (row->chars[byte_pos] == '\t') {
             row->render[idx++] = ' ';
             while (idx % TAB_STOP != 0)
                 row->render[idx++] = ' ';
-        } else
-            row->render[idx++] = row->chars[j];
+            byte_pos++;
+        } else {
+            int char_len = utf8_byte_length((uint8_t) row->chars[byte_pos]);
+            // Copy the UTF-8 sequence as-is
+            for (int i = 0; i < char_len && byte_pos + i < row->size; i++)
+                row->render[idx++] = row->chars[byte_pos + i];
+            byte_pos += char_len;
+        }
     }
     row->render[idx] = '\0';
     row->render_size = idx;
@@ -570,8 +709,14 @@ void row_delete_char(editor_row *row, int at)
 {
     if ((at < 0) || (at >= row->size))
         return;
-    memmove(&row->chars[at], &row->chars[at + 1], row->size - at);
-    row->size--;
+
+    // Find the byte length of the character at this position
+    int char_len = utf8_byte_length((uint8_t) row->chars[at]);
+
+    // Delete the entire UTF-8 sequence
+    memmove(&row->chars[at], &row->chars[at + char_len],
+            row->size - at - char_len + 1);
+    row->size -= char_len;
     update_row(row);
     ec.modified++;
 }
@@ -592,8 +737,11 @@ void delete_char()
         return;
     editor_row *row = &ec.row[ec.cursor_y];
     if (ec.cursor_x > 0) {
-        row_delete_char(row, ec.cursor_x - 1);
-        ec.cursor_x--;
+        // Move cursor to previous character boundary before deleting
+        const char *prev = utf8_prev_char(row->chars, row->chars + ec.cursor_x);
+        int prev_pos = prev - row->chars;
+        row_delete_char(row, prev_pos);
+        ec.cursor_x = prev_pos;
     } else {
         ec.cursor_x = ec.row[ec.cursor_y - 1].size;
         row_append(&ec.row[ec.cursor_y - 1], row->chars, row->size);
@@ -961,17 +1109,28 @@ void move_cursor(int key)
         (ec.cursor_y >= ec.num_rows) ? NULL : &ec.row[ec.cursor_y];
     switch (key) {
     case ARROW_LEFT:
-        if (ec.cursor_x != 0)
-            ec.cursor_x--;
-        else if (ec.cursor_y > 0) {
+        if (ec.cursor_x != 0) {
+            // Move to previous UTF-8 character boundary
+            if (row) {
+                const char *prev =
+                    utf8_prev_char(row->chars, row->chars + ec.cursor_x);
+                ec.cursor_x = prev - row->chars;
+            } else {
+                ec.cursor_x--;
+            }
+        } else if (ec.cursor_y > 0) {
             ec.cursor_y--;
             ec.cursor_x = ec.row[ec.cursor_y].size;
         }
         break;
     case ARROW_RIGHT:
-        if (row && ec.cursor_x < row->size)
-            ec.cursor_x++;
-        else if (row && ec.cursor_x == row->size) {
+        if (row && ec.cursor_x < row->size) {
+            // Move to next UTF-8 character boundary
+            const char *next = utf8_next_char(row->chars + ec.cursor_x);
+            ec.cursor_x = next - row->chars;
+            if (ec.cursor_x > row->size)
+                ec.cursor_x = row->size;
+        } else if (row && ec.cursor_x == row->size) {
             ec.cursor_y++;
             ec.cursor_x = 0;
         }
