@@ -14,6 +14,7 @@ Supported keys:
 * Ctrl-R: Redo
 * Ctrl-F: Find string in file
     - ESC to cancel search, Enter to exit search, arrows to navigate
+* Ctrl-N: Toggle line numbers display
 * Ctrl-O: Open file browser
     - Arrow keys to navigate files and directories
     - Enter to open file or enter directory

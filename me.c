@@ -770,6 +770,7 @@ struct {
     editor_mode_t prev_mode;     /* For returning from temporary modes */
     mode_data_t mode_state;      /* Mode-specific state data */
     selection_state_t selection; /* Text selection state */
+    bool show_line_numbers;      /* Toggle line numbers display */
 #if ENABLE_TIMER
     /* Timer support for time update */
     time_t last_update_time;
@@ -794,6 +795,7 @@ struct {
     .prev_mode = MODE_NORMAL,
     .mode_state = {0},
     .selection = {0, 0, 0, 0, false},
+    .show_line_numbers = false,
 #if ENABLE_TIMER
     .last_update_time = 0,
 #endif
@@ -2154,6 +2156,22 @@ static void buf_destroy(editor_buf_t *eb)
     free(eb->buf);
 }
 
+/* Calculate line number display width */
+static int get_line_number_width(void)
+{
+    if (!ec.show_line_numbers || ec.num_rows == 0)
+        return 0;
+
+    /* Calculate width needed for line numbers */
+    int max_line = ec.num_rows;
+    int width = 1;
+    while (max_line >= 10) {
+        width++;
+        max_line /= 10;
+    }
+    return width + 2; /* Add space for padding and separator */
+}
+
 static void editor_scroll(void)
 {
     ec.render_x = 0;
@@ -2163,10 +2181,15 @@ static void editor_scroll(void)
         ec.row_offset = ec.cursor_y;
     if (ec.cursor_y >= ec.row_offset + ec.screen_rows)
         ec.row_offset = ec.cursor_y - ec.screen_rows + 1;
+
+    /* Adjust horizontal scrolling for line numbers */
+    int line_num_width = get_line_number_width();
+    int available_cols = ec.screen_cols - line_num_width;
+
     if (ec.render_x < ec.col_offset)
         ec.col_offset = ec.render_x;
-    if (ec.render_x >= ec.col_offset + ec.screen_cols)
-        ec.col_offset = ec.render_x - ec.screen_cols + 1;
+    if (ec.render_x >= ec.col_offset + available_cols)
+        ec.col_offset = ec.render_x - available_cols + 1;
 }
 
 static void ui_draw_statusbar(editor_buf_t *eb)
@@ -2271,16 +2294,38 @@ static void ui_set_message(const char *msg, ...)
 
 static void ui_draw_rows(editor_buf_t *eb)
 {
+    /* Calculate line number width if enabled */
+    int line_num_width = get_line_number_width();
+
     for (int y = 0; y < ec.screen_rows; y++) {
         int file_row = y + ec.row_offset;
+
+        /* Draw line number if enabled */
+        if (ec.show_line_numbers) {
+            if (file_row < ec.num_rows) {
+                /* Draw line number */
+                char line_num[32];
+                int num_len = snprintf(line_num, sizeof(line_num), "%*d ",
+                                       line_num_width - 1, file_row + 1);
+                buf_append(eb, "\x1b[90m", 5); /* Dark gray color */
+                buf_append(eb, line_num, num_len);
+                buf_append(eb, "\x1b[0m", 4); /* Reset color */
+            } else {
+                /* Draw empty space for consistency */
+                for (int i = 0; i < line_num_width; i++)
+                    buf_append(eb, " ", 1);
+            }
+        }
+
         if (file_row >= ec.num_rows) {
             buf_append(eb, "~", 1);
         } else {
+            int available_cols = ec.screen_cols - line_num_width;
             int len = ec.row[file_row].render_size - ec.col_offset;
             if (len < 0)
                 len = 0;
-            if (len > ec.screen_cols)
-                len = ec.screen_cols;
+            if (len > available_cols)
+                len = available_cols;
             char *c = &ec.row[file_row].render[ec.col_offset];
             unsigned char *hl = &ec.row[file_row].highlight[ec.col_offset];
             int current_color = -1;
@@ -2364,9 +2409,12 @@ static void editor_refresh(void)
     ui_draw_rows(&eb);
     ui_draw_statusbar(&eb);
     ui_draw_messagebar(&eb);
+
+    /* Adjust cursor position for line numbers */
+    int line_num_width = get_line_number_width();
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (ec.cursor_y - ec.row_offset) + 1,
-             (ec.render_x - ec.col_offset) + 1);
+             (ec.render_x - ec.col_offset) + 1 + line_num_width);
     buf_append(&eb, buf, strlen(buf));
     buf_append(&eb, "\x1b[?25h", 6);
     write(STDOUT_FILENO, eb.buf, eb.len);
@@ -2384,9 +2432,12 @@ static void editor_refresh_full(void)
     ui_draw_rows(&eb);
     ui_draw_statusbar(&eb);
     ui_draw_messagebar(&eb);
+
+    /* Adjust cursor position for line numbers */
+    int line_num_width = get_line_number_width();
     char buf[32];
     snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (ec.cursor_y - ec.row_offset) + 1,
-             (ec.render_x - ec.col_offset) + 1);
+             (ec.render_x - ec.col_offset) + 1 + line_num_width);
     buf_append(&eb, buf, strlen(buf));
     buf_append(&eb, "\x1b[?25h", 6);
     write(STDOUT_FILENO, eb.buf, eb.len);
@@ -3263,6 +3314,11 @@ static void editor_process_key(void)
         break;
     case CTRL_('f'):
         search_find();
+        break;
+    case CTRL_('n'): /* Toggle line numbers */
+        ec.show_line_numbers = !ec.show_line_numbers;
+        ui_set_message("Line numbers %s",
+                       ec.show_line_numbers ? "enabled" : "disabled");
         break;
     case CTRL_('o'): /* Open file browser */
         mode_set(MODE_BROWSER);
