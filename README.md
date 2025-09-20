@@ -14,9 +14,12 @@ Supported keys:
 * Ctrl-R: Redo
 * Ctrl-F: Find string in file
     - ESC to cancel search, Enter to exit search, arrows to navigate
-* Ctrl-C: Copy line
-* Ctrl-X: Cut line
-* Ctrl-V: Paste line
+* Ctrl-X: Start/stop text marking (selection mode)
+    - Move cursor to select text while marking
+    - ESC to cancel selection
+* Ctrl-C: Copy marked text (or current line if no selection)
+* Ctrl-K: Cut marked text (or cut from cursor to end of line)
+* Ctrl-V: Paste copied/cut text
 * PageUp, PageDown: Scroll up/down
 * Up/Down/Left/Right: Move cursor
 * Home/End: move cursor to the beginning/end of editing line

@@ -250,6 +250,15 @@ static gap_buffer_t *gap_init(size_t initial_size)
     return gb;
 }
 
+/* Destroy gap buffer and free memory */
+static void gap_destroy(gap_buffer_t *gb)
+{
+    if (gb) {
+        free(gb->buffer);
+        free(gb);
+    }
+}
+
 /* Get total text length (excluding gap) */
 static inline size_t gap_length(gap_buffer_t *gb)
 {
@@ -416,6 +425,24 @@ static undo_stack_t *undo_init(int max_levels)
     stack->count = 0;
 
     return stack;
+}
+
+/* Destroy undo stack and free all memory */
+static void undo_destroy(undo_stack_t *stack)
+{
+    if (!stack)
+        return;
+
+    /* Free all undo nodes */
+    undo_node_t *node = stack->head;
+    while (node) {
+        undo_node_t *next = node->next;
+        free(node->text);
+        free(node);
+        node = next;
+    }
+
+    free(stack);
 }
 
 /* Free a single undo node */
@@ -657,16 +684,16 @@ typedef struct {
     _(HELP, "HELP", "Help screen mode")
 
 /* X-macro for key bindings - centralizes all shortcuts */
-#define KEY_BINDINGS                  \
-    _(QUIT, 'q', "Exit editor")       \
-    _(SAVE, 's', "Save file")         \
-    _(FIND, 'f', "Search text")       \
-    _(SELECT, 'b', "Begin selection") \
-    _(COPY, 'c', "Copy text")         \
-    _(CUT, 'x', "Cut text")           \
-    _(PASTE, 'v', "Paste text")       \
-    _(UNDO, 'z', "Undo last action")  \
-    _(REDO, 'r', "Redo last undo")    \
+#define KEY_BINDINGS                    \
+    _(QUIT, 'q', "Exit editor")         \
+    _(SAVE, 's', "Save file")           \
+    _(FIND, 'f', "Search text")         \
+    _(MARK, 'x', "Start marking text")  \
+    _(COPY, 'c', "Copy marked text")    \
+    _(CUT, 'k', "Cut line/marked text") \
+    _(PASTE, 'v', "Paste/uncut")        \
+    _(UNDO, 'z', "Undo last action")    \
+    _(REDO, 'r', "Redo last undo")      \
     _(HELP, '?', "Show help")
 
 /* clang-format off */
@@ -1398,19 +1425,339 @@ static void editor_paste(void)
     size_t paste_len = strlen(ec.copied_char_buffer);
     if (gap_insert_with_undo(ec.gb, ec.undo_stack, pos, ec.copied_char_buffer,
                              paste_len)) {
-        /* Update row directly */
-        if (ec.cursor_y == ec.num_rows)
-            row_insert(ec.num_rows, "", 0);
-        editor_row_t *row = &ec.row[ec.cursor_y];
-        row->chars = realloc(row->chars, row->size + paste_len + 1);
-        memmove(&row->chars[ec.cursor_x + paste_len], &row->chars[ec.cursor_x],
-                row->size - ec.cursor_x + 1);
-        memcpy(&row->chars[ec.cursor_x], ec.copied_char_buffer, paste_len);
-        row->size += paste_len;
-        row_update(row);
-        ec.cursor_x += paste_len;
+        /* Check if pasted text contains newlines */
+        bool has_newlines = (strchr(ec.copied_char_buffer, '\n') != NULL);
+
+        if (has_newlines) {
+            /* Multi-line paste: sync gap buffer to rows */
+            gap_sync_to_rows(ec.gb);
+
+            /* Calculate new cursor position after multi-line paste */
+            int lines_added = 0;
+            int last_line_len = 0;
+            for (size_t i = 0; i < paste_len; i++) {
+                if (ec.copied_char_buffer[i] == '\n') {
+                    lines_added++;
+                    last_line_len = 0;
+                } else {
+                    last_line_len++;
+                }
+            }
+
+            /* Move cursor to end of pasted text */
+            if (lines_added > 0) {
+                ec.cursor_y += lines_added;
+                ec.cursor_x = last_line_len;
+            } else {
+                ec.cursor_x += paste_len;
+            }
+        } else {
+            /* Single-line paste: update row directly for efficiency */
+            if (ec.cursor_y == ec.num_rows)
+                row_insert(ec.num_rows, "", 0);
+            editor_row_t *row = &ec.row[ec.cursor_y];
+            row->chars = realloc(row->chars, row->size + paste_len + 1);
+            memmove(&row->chars[ec.cursor_x + paste_len],
+                    &row->chars[ec.cursor_x], row->size - ec.cursor_x + 1);
+            memcpy(&row->chars[ec.cursor_x], ec.copied_char_buffer, paste_len);
+            row->size += paste_len;
+            row_update(row);
+            ec.cursor_x += paste_len;
+        }
+
+        ec.modified = true;
+        ui_set_message("Pasted %zu bytes", paste_len);
+    }
+}
+
+/* Check if a position is within the selection */
+static bool selection_contains(int x, int y)
+{
+    if (!ec.selection.active)
+        return false;
+
+    int start_y = ec.selection.start_y, start_x = ec.selection.start_x;
+    int end_y = ec.selection.end_y, end_x = ec.selection.end_x;
+
+    /* Normalize selection */
+    if (start_y > end_y || (start_y == end_y && start_x > end_x)) {
+        int tmp_y = start_y;
+        start_y = end_y;
+        end_y = tmp_y;
+        int tmp_x = start_x;
+        start_x = end_x;
+        end_x = tmp_x;
+    }
+
+    if (y < start_y || y > end_y)
+        return false;
+
+    if (y == start_y && y == end_y) {
+        /* Single line selection */
+        return x >= start_x && x < end_x;
+    } else if (y == start_y) {
+        /* First line of multi-line selection */
+        return x >= start_x;
+    } else if (y == end_y) {
+        /* Last line of multi-line selection */
+        return x < end_x;
+    } else {
+        /* Middle lines of multi-line selection */
+        return true;
+    }
+}
+
+/* Get the selected text as a string */
+static char *selection_get_text(void)
+{
+    if (!ec.selection.active)
+        return NULL;
+
+    int start_y = ec.selection.start_y;
+    int start_x = ec.selection.start_x;
+    int end_y = ec.selection.end_y;
+    int end_x = ec.selection.end_x;
+
+    /* Normalize selection (ensure start comes before end) */
+    if (start_y > end_y || (start_y == end_y && start_x > end_x)) {
+        int tmp_y = start_y;
+        start_y = end_y;
+        end_y = tmp_y;
+        int tmp_x = start_x;
+        start_x = end_x;
+        end_x = tmp_x;
+    }
+
+    /* Calculate total size needed */
+    size_t total_size = 0;
+    if (start_y == end_y) {
+        /* Single line selection */
+        if (start_y < ec.num_rows && end_x > start_x)
+            total_size = end_x - start_x;
+    } else {
+        /* Multi-line selection - properly count newlines */
+        for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
+            if (y == start_y) {
+                /* First line: from start_x to end of line */
+                total_size += ec.row[y].size - start_x;
+                if (y < end_y)
+                    total_size++; /* Add newline if not last line */
+            } else if (y == end_y) {
+                /* Last line: from beginning to end_x */
+                total_size += end_x;
+            } else {
+                /* Middle lines: entire line */
+                total_size += ec.row[y].size;
+                total_size++; /* Add newline */
+            }
+        }
+    }
+
+    if (total_size == 0)
+        return NULL;
+
+    char *buffer = malloc(total_size + 1);
+    if (!buffer)
+        return NULL;
+
+    /* Copy selected text */
+    char *p = buffer;
+    if (start_y == end_y) {
+        /* Single line */
+        if (start_y < ec.num_rows) {
+            int len = end_x - start_x;
+            if (len > 0) {
+                memcpy(p, &ec.row[start_y].chars[start_x], len);
+                p += len;
+            }
+        }
+    } else {
+        /* Multi-line - properly include newlines */
+        for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
+            editor_row_t *row = &ec.row[y];
+            if (y == start_y) {
+                /* First line: from start_x to end */
+                int len = row->size - start_x;
+                if (len > 0) {
+                    memcpy(p, &row->chars[start_x], len);
+                    p += len;
+                }
+                if (y < end_y) {
+                    *p++ = '\n'; /* Add newline after first line */
+                }
+            } else if (y == end_y) {
+                /* Last line: from beginning to end_x */
+                if (end_x > 0) {
+                    memcpy(p, row->chars, end_x);
+                    p += end_x;
+                }
+            } else {
+                /* Middle lines: entire line with newline */
+                memcpy(p, row->chars, row->size);
+                p += row->size;
+                *p++ = '\n'; /* Add newline after middle lines */
+            }
+        }
+    }
+    *p = '\0';
+
+    return buffer;
+}
+
+/* Copy selected text to clipboard */
+static void selection_copy(void)
+{
+    if (!ec.selection.active) {
+        ui_set_message("No selection to copy");
+        return;
+    }
+
+    char *text = selection_get_text();
+    if (text) {
+        free(ec.copied_char_buffer);
+        ec.copied_char_buffer = text;
+        ui_set_message("Selection copied (%zu bytes)", strlen(text));
+    }
+}
+
+/* Delete selected text */
+static void selection_delete(void)
+{
+    if (!ec.selection.active || !ec.gb)
+        return;
+
+    int start_y = ec.selection.start_y;
+    int start_x = ec.selection.start_x;
+    int end_y = ec.selection.end_y;
+    int end_x = ec.selection.end_x;
+
+    /* Normalize selection */
+    if (start_y > end_y || (start_y == end_y && start_x > end_x)) {
+        int tmp_y = start_y;
+        start_y = end_y;
+        end_y = tmp_y;
+        int tmp_x = start_x;
+        start_x = end_x;
+        end_x = tmp_x;
+    }
+
+    /* Calculate position in gap buffer */
+    size_t start_pos = 0;
+    for (int i = 0; i < start_y && i < ec.num_rows; i++)
+        start_pos += ec.row[i].size + 1;
+    start_pos += start_x;
+
+    size_t end_pos = 0;
+    for (int i = 0; i < end_y && i < ec.num_rows; i++)
+        end_pos += ec.row[i].size + 1;
+    end_pos += end_x;
+
+    /* Delete the selected range */
+    if (end_pos > start_pos) {
+        gap_delete_with_undo(ec.gb, ec.undo_stack, start_pos,
+                             end_pos - start_pos);
+        gap_sync_to_rows(ec.gb);
+        ec.cursor_y = start_y;
+        ec.cursor_x = start_x;
         ec.modified = true;
     }
+
+    ec.selection.active = false;
+    mode_set(MODE_NORMAL);
+}
+
+/* Cut selected text (copy then delete) */
+static void selection_cut(void)
+{
+    if (!ec.selection.active) {
+        ui_set_message("No selection to cut");
+        return;
+    }
+
+    selection_copy();
+    selection_delete();
+    ui_set_message("Selection cut");
+}
+
+/* Indent selected lines */
+static void selection_indent(void)
+{
+    if (!ec.selection.active || !ec.gb)
+        return;
+
+    int start_y = ec.selection.start_y;
+    int end_y = ec.selection.end_y;
+
+    /* Normalize */
+    if (start_y > end_y) {
+        int tmp = start_y;
+        start_y = end_y;
+        end_y = tmp;
+    }
+
+    /* Indent each line in selection */
+    for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
+        /* Calculate position at start of line */
+        size_t pos = 0;
+        for (int i = 0; i < y && i < ec.num_rows; i++)
+            pos += ec.row[i].size + 1;
+
+        /* Insert tab at beginning of line */
+        char tab = '\t';
+        gap_insert_with_undo(ec.gb, ec.undo_stack, pos, &tab, 1);
+    }
+
+    gap_sync_to_rows(ec.gb);
+    ec.modified = true;
+    ui_set_message("Selection indented");
+}
+
+/* Unindent selected lines */
+static void selection_unindent(void)
+{
+    if (!ec.selection.active || !ec.gb)
+        return;
+
+    int start_y = ec.selection.start_y;
+    int end_y = ec.selection.end_y;
+
+    /* Normalize */
+    if (start_y > end_y) {
+        int tmp = start_y;
+        start_y = end_y;
+        end_y = tmp;
+    }
+
+    /* Unindent each line in selection */
+    for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
+        editor_row_t *row = &ec.row[y];
+        if (row->size > 0) {
+            /* Check if first char is tab or space */
+            if (row->chars[0] == '\t' || row->chars[0] == ' ') {
+                /* Calculate position at start of line */
+                size_t pos = 0;
+                for (int i = 0; i < y; i++)
+                    pos += ec.row[i].size + 1;
+
+                /* Count spaces to remove (up to TAB_STOP) */
+                int remove = 1;
+                if (row->chars[0] == ' ') {
+                    for (int i = 1; i < TAB_STOP && i < row->size; i++) {
+                        if (row->chars[i] == ' ')
+                            remove++;
+                        else
+                            break;
+                    }
+                }
+
+                gap_delete_with_undo(ec.gb, ec.undo_stack, pos, remove);
+            }
+        }
+    }
+
+    gap_sync_to_rows(ec.gb);
+    ec.modified = true;
+    ui_set_message("Selection unindented");
 }
 
 static void editor_newline(void)
@@ -1953,7 +2300,25 @@ static void ui_draw_rows(editor_buf_t *eb)
             char *c = &ec.row[file_row].render[ec.col_offset];
             unsigned char *hl = &ec.row[file_row].highlight[ec.col_offset];
             int current_color = -1;
+            bool in_selection = false;
+
             for (int j = 0; j < len; j++) {
+                /* Check if this character is in selection */
+                int cursor_x = row_renderx_to_cursorx(&ec.row[file_row],
+                                                      ec.col_offset + j);
+                bool is_selected = selection_contains(cursor_x, file_row);
+
+                /* Handle selection highlighting transitions */
+                if (is_selected && !in_selection) {
+                    /* Enter selection - use inverse video */
+                    buf_append(eb, "\x1b[7m", 4);
+                    in_selection = true;
+                } else if (!is_selected && in_selection) {
+                    /* Exit selection */
+                    buf_append(eb, "\x1b[27m", 5);
+                    in_selection = false;
+                }
+
                 if (iscntrl(c[j])) {
                     char sym = (c[j] <= 26) ? '@' + c[j] : '?';
                     buf_append(eb, "\x1b[7m", 4);
@@ -1995,6 +2360,10 @@ static void ui_draw_rows(editor_buf_t *eb)
                         buf_append(eb, &c[j], 1);
                     }
                 }
+            }
+            /* Ensure selection highlighting is turned off at end of line */
+            if (in_selection) {
+                buf_append(eb, "\x1b[27m", 5);
             }
             buf_append(eb, "\x1b[39m", 5);
         }
@@ -2206,6 +2575,46 @@ static void editor_move_cursor(int key)
         ec.cursor_x = row_len;
 }
 
+/* Clean up all allocated memory before exit */
+static void editor_cleanup(void)
+{
+    /* Free all rows */
+    for (int i = 0; i < ec.num_rows; i++) {
+        free(ec.row[i].chars);
+        free(ec.row[i].render);
+        free(ec.row[i].highlight);
+    }
+    free(ec.row);
+    ec.row = NULL;
+    ec.num_rows = 0;
+
+    /* Free file name */
+    free(ec.file_name);
+    ec.file_name = NULL;
+
+    /* Free copied buffer */
+    free(ec.copied_char_buffer);
+    ec.copied_char_buffer = NULL;
+
+    /* Free gap buffer */
+    if (ec.gb) {
+        gap_destroy(ec.gb);
+        ec.gb = NULL;
+    }
+
+    /* Free undo stack */
+    if (ec.undo_stack) {
+        undo_destroy(ec.undo_stack);
+        ec.undo_stack = NULL;
+    }
+
+    /* Free mode state */
+    free(ec.mode_state.search.query);
+    ec.mode_state.search.query = NULL;
+    free(ec.mode_state.prompt.buffer);
+    ec.mode_state.prompt.buffer = NULL;
+}
+
 static void editor_process_key(void)
 {
     static int indent_level = 0;
@@ -2215,8 +2624,10 @@ static void editor_process_key(void)
     switch (ec.mode) {
     case MODE_SELECT:
         switch (c) {
-        case '\x1b': /* ESC - cancel selection */
+        case '\x1b': /* ESC - abort selection */
+            ec.selection.active = false;
             mode_set(MODE_NORMAL);
+            ui_set_message("Mark cancelled");
             return;
         case ARROW_UP:
         case ARROW_DOWN:
@@ -2227,15 +2638,54 @@ static void editor_process_key(void)
             ec.selection.end_x = ec.cursor_x;
             ec.selection.end_y = ec.cursor_y;
             return;
-        case CTRL_('c'): /* Copy selection */
-            /* TODO: Implement selection copy */
-            ui_set_message("Selection copied");
+        case HOME_KEY:
+            ec.cursor_x = 0;
+            ec.selection.end_x = ec.cursor_x;
+            ec.selection.end_y = ec.cursor_y;
+            return;
+        case END_KEY:
+            if (ec.cursor_y < ec.num_rows)
+                ec.cursor_x = ec.row[ec.cursor_y].size;
+            ec.selection.end_x = ec.cursor_x;
+            ec.selection.end_y = ec.cursor_y;
+            return;
+        case PAGE_UP:
+        case PAGE_DOWN: {
+            if (c == PAGE_UP)
+                ec.cursor_y = ec.row_offset;
+            else
+                ec.cursor_y = ec.row_offset + ec.screen_rows - 1;
+            int times = ec.screen_rows;
+            while (times--)
+                editor_move_cursor((c == PAGE_UP) ? ARROW_UP : ARROW_DOWN);
+            ec.selection.end_x = ec.cursor_x;
+            ec.selection.end_y = ec.cursor_y;
+            return;
+        }
+        case CTRL_('c'): /* Copy marked text and exit marking */
+            selection_copy();
+            mode_set(MODE_NORMAL);
+            ui_set_message("Copied marked text");
+            return;
+        case CTRL_('k'): /* Cut marked text and exit marking */
+            selection_cut();
+            mode_set(MODE_NORMAL);
+            ui_set_message("Cut marked text");
+            return;
+        case CTRL_('v'): /* Paste over selection */
+            selection_delete();
+            editor_paste();
             mode_set(MODE_NORMAL);
             return;
-        case CTRL_('x'): /* Cut selection */
-            /* TODO: Implement selection cut */
-            ui_set_message("Selection cut");
-            mode_set(MODE_NORMAL);
+        case DEL_KEY:
+        case BACKSPACE:
+            selection_delete();
+            return;
+        case '\t': /* Tab to indent */
+            selection_indent();
+            return;
+        case CTRL_('u'): /* Ctrl-U to unindent */
+            selection_unindent();
             return;
         default:
             /* Exit selection mode for other keys */
@@ -2274,20 +2724,96 @@ static void editor_process_key(void)
         }
         term_clear();
         term_close_buffer();
+        editor_cleanup();
         exit(0);
         break;
     case CTRL_('s'):
         file_save();
         break;
-    case CTRL_('x'):
-        if (ec.cursor_y < ec.num_rows)
-            editor_cut();
+    case CTRL_('x'): /* Start text marking */
+        if (ec.mode != MODE_SELECT) {
+            mode_set(MODE_SELECT);
+            ui_set_message(
+                "Mark set - Move cursor to select, ^C=Copy, ^K=Cut, "
+                "ESC=Cancel");
+        }
         break;
-    case CTRL_('c'):
+    case CTRL_('c'): /* Copy current line (no marking in normal mode) */
         if (ec.cursor_y < ec.num_rows)
             editor_copy(0);
         break;
-    case CTRL_('v'):
+    case CTRL_('k'): /* Cut from cursor to end of line */
+        if (ec.cursor_y < ec.num_rows) {
+            editor_row_t *row = &ec.row[ec.cursor_y];
+            if (ec.cursor_x < row->size) {
+                /* Cut from cursor to end of line */
+                int len = row->size - ec.cursor_x;
+                char *text = malloc(len + 1);
+                if (text) {
+                    memcpy(text, &row->chars[ec.cursor_x], len);
+                    text[len] = '\0';
+
+                    /* Store in copied_char_buffer */
+                    free(ec.copied_char_buffer);
+                    ec.copied_char_buffer = text;
+
+                    /* Delete from cursor to end using gap buffer */
+                    size_t pos = 0;
+                    for (int i = 0; i < ec.cursor_y; i++)
+                        pos += ec.row[i].size + 1;
+                    pos += ec.cursor_x;
+
+                    if (ec.gb)
+                        gap_delete_with_undo(ec.gb, ec.undo_stack, pos, len);
+
+                    /* Update row */
+                    row->size = ec.cursor_x;
+                    row->chars[row->size] = '\0';
+                    row_update(row);
+                    ec.modified = true;
+                    ui_set_message("Cut to end of line");
+                }
+            } else if (ec.cursor_x == row->size &&
+                       ec.cursor_y < ec.num_rows - 1) {
+                /* At end of line, join with next line by deleting newline */
+                size_t pos = 0;
+                for (int i = 0; i < ec.cursor_y; i++)
+                    pos += ec.row[i].size + 1;
+                pos += row->size;
+
+                if (ec.gb) {
+                    /* Delete the newline character */
+                    gap_delete_with_undo(ec.gb, ec.undo_stack, pos, 1);
+                }
+
+                /* Join rows */
+                int next_len = ec.row[ec.cursor_y + 1].size;
+                row->chars = realloc(row->chars, row->size + next_len + 1);
+                memcpy(&row->chars[row->size], ec.row[ec.cursor_y + 1].chars,
+                       next_len);
+                row->size += next_len;
+                row->chars[row->size] = '\0';
+                row_update(row);
+
+                /* Delete the next row using memmove */
+                free(ec.row[ec.cursor_y + 1].chars);
+                free(ec.row[ec.cursor_y + 1].render);
+                free(ec.row[ec.cursor_y + 1].highlight);
+                if (ec.cursor_y + 1 < ec.num_rows - 1) {
+                    memmove(
+                        &ec.row[ec.cursor_y + 1], &ec.row[ec.cursor_y + 2],
+                        sizeof(editor_row_t) * (ec.num_rows - ec.cursor_y - 2));
+                }
+                ec.num_rows--;
+                ec.modified = true;
+                ui_set_message("Lines joined");
+            } else {
+                /* Empty line - cut whole line */
+                editor_cut();
+            }
+        }
+        break;
+    case CTRL_('v'): /* Paste/uncut */
         editor_paste();
         break;
     case CTRL_('z'):
@@ -2342,9 +2868,6 @@ static void editor_process_key(void)
     case CTRL_('f'):
         search_find();
         break;
-    case CTRL_('b'): /* Begin selection mode */
-        mode_set(MODE_SELECT);
-        break;
     case CTRL_('?'): /* Show help */
         mode_set(MODE_HELP);
         /* Generate comprehensive help */
@@ -2353,7 +2876,7 @@ static void editor_process_key(void)
             help_generate(help_buffer, sizeof(help_buffer));
             ui_set_message(
                 "Press any key to close. Key bindings: ^Q=Quit ^S=Save ^F=Find "
-                "^B=Select ^Z=Undo ^R=Redo");
+                "^X=Mark ^C=Copy ^K=Cut ^V=Paste ^Z=Undo");
         }
         break;
     case BACKSPACE:
@@ -2422,7 +2945,7 @@ int main(int argc, char *argv[])
     if (argc >= 2)
         file_open(argv[1]);
     term_enable_raw();
-    ui_set_message("Mazu Editor | ^? Help");
+    ui_set_message("Mazu Editor | Ctrl-? Help");
     editor_refresh();
 
     /* Main event loop */
