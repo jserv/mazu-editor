@@ -14,6 +14,10 @@ Supported keys:
 * Ctrl-R: Redo
 * Ctrl-F: Find string in file
     - ESC to cancel search, Enter to exit search, arrows to navigate
+* Ctrl-O: Open file browser
+    - Arrow keys to navigate files and directories
+    - Enter to open file or enter directory
+    - ESC or Ctrl-Q to cancel
 * Ctrl-X: Start/stop text marking (selection mode)
     - Move cursor to select text while marking
     - ESC to cancel selection

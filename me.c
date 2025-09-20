@@ -23,11 +23,18 @@
 #include <string.h>
 
 /* System headers */
+#include <dirent.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sys/ioctl.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
 
 /* Timer-specific headers */
 #if ENABLE_TIMER
@@ -681,13 +688,15 @@ typedef struct {
     _(PROMPT, "PROMPT", "Generic prompt mode")        \
     _(SELECT, "SELECT", "Text selection mode")        \
     _(CONFIRM, "CONFIRM", "Confirmation dialog mode") \
-    _(HELP, "HELP", "Help screen mode")
+    _(HELP, "HELP", "Help screen mode")               \
+    _(BROWSER, "BROWSER", "File browser mode")
 
 /* X-macro for key bindings - centralizes all shortcuts */
 #define KEY_BINDINGS                    \
     _(QUIT, 'q', "Exit editor")         \
     _(SAVE, 's', "Save file")           \
     _(FIND, 'f', "Search text")         \
+    _(OPEN, 'o', "Open file browser")   \
     _(MARK, 'x', "Start marking text")  \
     _(COPY, 'c', "Copy marked text")    \
     _(CUT, 'k', "Cut line/marked text") \
@@ -729,6 +738,14 @@ typedef union {
         const char *message;
         bool choice; /* false = No, true = Yes */
     } confirm;
+    struct {
+        char **entries;    /* Array of file/dir names */
+        int num_entries;   /* Number of entries */
+        int selected;      /* Currently selected entry */
+        int offset;        /* Scroll offset */
+        char *current_dir; /* Current directory path */
+        bool show_hidden;  /* Show hidden files (toggle with H) */
+    } browser;
 } mode_data_t;
 
 /* Editor config structure */
@@ -1679,86 +1696,6 @@ static void selection_cut(void)
     ui_set_message("Selection cut");
 }
 
-/* Indent selected lines */
-static void selection_indent(void)
-{
-    if (!ec.selection.active || !ec.gb)
-        return;
-
-    int start_y = ec.selection.start_y;
-    int end_y = ec.selection.end_y;
-
-    /* Normalize */
-    if (start_y > end_y) {
-        int tmp = start_y;
-        start_y = end_y;
-        end_y = tmp;
-    }
-
-    /* Indent each line in selection */
-    for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
-        /* Calculate position at start of line */
-        size_t pos = 0;
-        for (int i = 0; i < y && i < ec.num_rows; i++)
-            pos += ec.row[i].size + 1;
-
-        /* Insert tab at beginning of line */
-        char tab = '\t';
-        gap_insert_with_undo(ec.gb, ec.undo_stack, pos, &tab, 1);
-    }
-
-    gap_sync_to_rows(ec.gb);
-    ec.modified = true;
-    ui_set_message("Selection indented");
-}
-
-/* Unindent selected lines */
-static void selection_unindent(void)
-{
-    if (!ec.selection.active || !ec.gb)
-        return;
-
-    int start_y = ec.selection.start_y;
-    int end_y = ec.selection.end_y;
-
-    /* Normalize */
-    if (start_y > end_y) {
-        int tmp = start_y;
-        start_y = end_y;
-        end_y = tmp;
-    }
-
-    /* Unindent each line in selection */
-    for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
-        editor_row_t *row = &ec.row[y];
-        if (row->size > 0) {
-            /* Check if first char is tab or space */
-            if (row->chars[0] == '\t' || row->chars[0] == ' ') {
-                /* Calculate position at start of line */
-                size_t pos = 0;
-                for (int i = 0; i < y; i++)
-                    pos += ec.row[i].size + 1;
-
-                /* Count spaces to remove (up to TAB_STOP) */
-                int remove = 1;
-                if (row->chars[0] == ' ') {
-                    for (int i = 1; i < TAB_STOP && i < row->size; i++) {
-                        if (row->chars[i] == ' ')
-                            remove++;
-                        else
-                            break;
-                    }
-                }
-
-                gap_delete_with_undo(ec.gb, ec.undo_stack, pos, remove);
-            }
-        }
-    }
-
-    gap_sync_to_rows(ec.gb);
-    ec.modified = true;
-    ui_set_message("Selection unindented");
-}
 
 static void editor_newline(void)
 {
@@ -1999,6 +1936,23 @@ static char *file_rows_to_string(int *buf_len)
 
 static void file_open(char *file_name)
 {
+    /* Clear existing file content first */
+    for (int i = 0; i < ec.num_rows; i++) {
+        free(ec.row[i].chars);
+        free(ec.row[i].render);
+        free(ec.row[i].highlight);
+    }
+    free(ec.row);
+    ec.row = NULL;
+    ec.num_rows = 0;
+
+    /* Reset cursor and scroll position */
+    ec.cursor_x = 0;
+    ec.cursor_y = 0;
+    ec.row_offset = 0;
+    ec.col_offset = 0;
+    ec.render_x = 0;
+
     free(ec.file_name);
     ec.file_name = strdup(file_name);
     syntax_select();
@@ -2008,12 +1962,21 @@ static void file_open(char *file_name)
 
     /* Load file into gap buffer if available */
     if (ec.gb) {
+        /* Recreate gap buffer for new file */
+        gap_destroy(ec.gb);
+        ec.gb = gap_init(1024);
         /* Rewind file to beginning */
         fseek(file, 0, SEEK_SET);
         gap_load_file(ec.gb, file);
 
         /* Rewind for row loading */
         fseek(file, 0, SEEK_SET);
+    }
+
+    /* Clear undo/redo stacks for new file */
+    if (ec.undo_stack) {
+        undo_destroy(ec.undo_stack);
+        ec.undo_stack = undo_init(100);
     }
 
     char *line = NULL;
@@ -2256,6 +2219,7 @@ static void ui_draw_messagebar(editor_buf_t *eb)
 {
     buf_append(eb, "\x1b[93m\x1b[44m\x1b[K", 13);
     int msg_len = strlen(ec.status_msg);
+    int displayed_len = 0;
 
     /* For search messages, try to show as much as possible */
     if (strstr(ec.status_msg, "Search:")) {
@@ -2263,16 +2227,36 @@ static void ui_draw_messagebar(editor_buf_t *eb)
         if (msg_len > ec.screen_cols) {
             /* Truncate but try to keep the help text visible */
             buf_append(eb, ec.status_msg, ec.screen_cols);
+            displayed_len = ec.screen_cols;
         } else {
             buf_append(eb, ec.status_msg, msg_len);
+            displayed_len = msg_len;
+        }
+    } else if (strstr(ec.status_msg, "File Browser:")) {
+        /* Always show file browser messages */
+        if (msg_len > ec.screen_cols) {
+            buf_append(eb, ec.status_msg, ec.screen_cols);
+            displayed_len = ec.screen_cols;
+        } else {
+            buf_append(eb, ec.status_msg, msg_len);
+            displayed_len = msg_len;
         }
     } else {
         /* Regular messages: truncate and show for 5 seconds */
         if (msg_len > ec.screen_cols)
             msg_len = ec.screen_cols;
-        if (msg_len && time(NULL) - ec.status_msg_time < 5)
+        if (msg_len && time(NULL) - ec.status_msg_time < 5) {
             buf_append(eb, ec.status_msg, msg_len);
+            displayed_len = msg_len;
+        }
     }
+
+    /* Pad the rest of the line with spaces */
+    while (displayed_len < ec.screen_cols) {
+        buf_append(eb, " ", 1);
+        displayed_len++;
+    }
+
     buf_append(eb, "\x1b[0m", 4);
 }
 
@@ -2362,9 +2346,8 @@ static void ui_draw_rows(editor_buf_t *eb)
                 }
             }
             /* Ensure selection highlighting is turned off at end of line */
-            if (in_selection) {
+            if (in_selection)
                 buf_append(eb, "\x1b[27m", 5);
-            }
             buf_append(eb, "\x1b[39m", 5);
         }
         buf_append(eb, "\x1b[K", 3);
@@ -2377,6 +2360,26 @@ static void editor_refresh(void)
     editor_scroll();
     editor_buf_t eb = {NULL, 0};
     buf_append(&eb, "\x1b[?25l", 6);
+    buf_append(&eb, "\x1b[H", 3);
+    ui_draw_rows(&eb);
+    ui_draw_statusbar(&eb);
+    ui_draw_messagebar(&eb);
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", (ec.cursor_y - ec.row_offset) + 1,
+             (ec.render_x - ec.col_offset) + 1);
+    buf_append(&eb, buf, strlen(buf));
+    buf_append(&eb, "\x1b[?25h", 6);
+    write(STDOUT_FILENO, eb.buf, eb.len);
+    buf_destroy(&eb);
+}
+
+/* Force full screen refresh by clearing first */
+static void editor_refresh_full(void)
+{
+    editor_scroll();
+    editor_buf_t eb = {NULL, 0};
+    buf_append(&eb, "\x1b[?25l", 6);
+    buf_append(&eb, "\x1b[2J", 4); /* Clear entire screen */
     buf_append(&eb, "\x1b[H", 3);
     ui_draw_rows(&eb);
     ui_draw_statusbar(&eb);
@@ -2575,6 +2578,341 @@ static void editor_move_cursor(int key)
         ec.cursor_x = row_len;
 }
 
+/* File browser implementation */
+
+/* Get file extension */
+static const char *get_file_extension(const char *filename)
+{
+    const char *dot = strrchr(filename, '.');
+    if (!dot || dot == filename)
+        return "";
+    return dot + 1;
+}
+
+/* Get file type indicator and color */
+static const char *get_file_type_info(const char *filename, int *color)
+{
+    if (filename[0] == '/') {
+        *color = 34; /* Blue for directories */
+        return "[DIR]  ";
+    }
+
+    const char *ext = get_file_extension(filename);
+
+    /* Source and script files */
+    if (!strcasecmp(ext, "c") || !strcasecmp(ext, "h") ||
+        !strcasecmp(ext, "cpp") || !strcasecmp(ext, "cxx") ||
+        !strcasecmp(ext, "hpp") || !strcasecmp(ext, "cc") ||
+        !strcasecmp(ext, "sh") || !strcasecmp(ext, "py") ||
+        !strcasecmp(ext, "rb") || !strcasecmp(ext, "js") ||
+        !strcasecmp(ext, "rs") || !strcasecmp(ext, "go") ||
+        !strcasecmp(ext, "java") || !strcasecmp(ext, "php") ||
+        !strcasecmp(ext, "pl") || !strcasecmp(ext, "lua") ||
+        !strcasecmp(ext, "vim") || !strcasecmp(ext, "asm") ||
+        !strcasecmp(ext, "s")) {
+        *color = 32; /* Green for source */
+        return "[SRC]  ";
+    }
+
+    /* All other files */
+    *color = 37; /* White for others */
+    return "[FILE] ";
+}
+
+static void browser_free_entries(void)
+{
+    if (ec.mode_state.browser.entries) {
+        for (int i = 0; i < ec.mode_state.browser.num_entries; i++)
+            free(ec.mode_state.browser.entries[i]);
+        free(ec.mode_state.browser.entries);
+        ec.mode_state.browser.entries = NULL;
+        ec.mode_state.browser.num_entries = 0;
+    }
+    free(ec.mode_state.browser.current_dir);
+    ec.mode_state.browser.current_dir = NULL;
+}
+
+static int browser_compare_entries(const void *a, const void *b)
+{
+    const char *name_a = *(const char **) a, *name_b = *(const char **) b;
+
+    /* Directories first (start with '/'), then files */
+    bool is_dir_a = (name_a[0] == '/');
+    bool is_dir_b = (name_b[0] == '/');
+
+    if (is_dir_a && !is_dir_b)
+        return -1;
+    if (!is_dir_a && is_dir_b)
+        return 1;
+
+    /* Compare names, ignoring the '/' prefix for directories */
+    const char *cmp_a = is_dir_a ? name_a + 1 : name_a;
+    const char *cmp_b = is_dir_b ? name_b + 1 : name_b;
+
+    return strcasecmp(cmp_a, cmp_b);
+}
+
+static void browser_load_directory(const char *path)
+{
+    browser_free_entries();
+
+    DIR *dir = opendir(path ? path : ".");
+    if (!dir) {
+        ui_set_message("Cannot open directory: %s", strerror(errno));
+        mode_set(MODE_NORMAL);
+        return;
+    }
+
+    /* Store current directory */
+    ec.mode_state.browser.current_dir = strdup(path ? path : ".");
+
+    /* Count entries first */
+    int capacity = 32;
+    ec.mode_state.browser.entries = malloc(sizeof(char *) * capacity);
+    ec.mode_state.browser.num_entries = 0;
+
+    /* Add parent directory if not root */
+    if (strcmp(ec.mode_state.browser.current_dir, "/")) {
+        ec.mode_state.browser.entries[ec.mode_state.browser.num_entries++] =
+            strdup("/..");
+    }
+
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL) {
+        /* Skip current and parent directory entries */
+        if (!strcmp(de->d_name, ".") || !strcmp(de->d_name, ".."))
+            continue;
+
+        /* Skip hidden files if show_hidden is false */
+        if (!ec.mode_state.browser.show_hidden && de->d_name[0] == '.')
+            continue;
+
+        /* Check if we need to resize array */
+        if (ec.mode_state.browser.num_entries >= capacity - 1) {
+            capacity *= 2;
+            ec.mode_state.browser.entries = realloc(
+                ec.mode_state.browser.entries, sizeof(char *) * capacity);
+        }
+
+        /* Get file info to determine if it's a directory */
+        char full_path[PATH_MAX];
+        snprintf(full_path, sizeof(full_path), "%s/%s",
+                 ec.mode_state.browser.current_dir, de->d_name);
+
+        struct stat st;
+        if (stat(full_path, &st) == 0) {
+            if (S_ISDIR(st.st_mode)) {
+                /* Directory - prefix with '/' */
+                char *entry = malloc(strlen(de->d_name) + 2);
+                sprintf(entry, "/%s", de->d_name);
+                ec.mode_state.browser
+                    .entries[ec.mode_state.browser.num_entries++] = entry;
+            } else if (S_ISREG(st.st_mode)) {
+                /* Regular file */
+                ec.mode_state.browser
+                    .entries[ec.mode_state.browser.num_entries++] =
+                    strdup(de->d_name);
+            }
+        }
+    }
+
+    closedir(dir);
+
+    /* Sort entries: directories first, then files, both alphabetically */
+    if (ec.mode_state.browser.num_entries > 0) {
+        qsort(ec.mode_state.browser.entries, ec.mode_state.browser.num_entries,
+              sizeof(char *), browser_compare_entries);
+    }
+
+    ec.mode_state.browser.selected = 0;
+    ec.mode_state.browser.offset = 0;
+}
+
+static void browser_open_selected(void)
+{
+    if (ec.mode_state.browser.selected >= ec.mode_state.browser.num_entries)
+        return;
+
+    char *entry = ec.mode_state.browser.entries[ec.mode_state.browser.selected];
+    if (!entry)
+        return;
+
+    if (entry[0] == '/') {
+        /* Directory */
+        char new_path[PATH_MAX];
+
+        if (!strcmp(entry, "/..")) {
+            /* Go to parent directory */
+            char *last_slash = strrchr(ec.mode_state.browser.current_dir, '/');
+            if (last_slash && last_slash != ec.mode_state.browser.current_dir) {
+                *last_slash = '\0';
+                browser_load_directory(ec.mode_state.browser.current_dir);
+            } else {
+                browser_load_directory("/");
+            }
+        } else {
+            /* Enter subdirectory */
+            snprintf(new_path, sizeof(new_path), "%s%s",
+                     ec.mode_state.browser.current_dir, entry);
+            browser_load_directory(new_path);
+        }
+    } else {
+        /* File - open it */
+        char full_path[PATH_MAX];
+        snprintf(full_path, sizeof(full_path), "%s/%s",
+                 ec.mode_state.browser.current_dir, entry);
+
+        /* Save current file if modified */
+        if (ec.modified) {
+            if (!ui_confirm("Current file has been modified. Save before "
+                            "opening new file?")) {
+                return;
+            }
+            file_save();
+        }
+
+        /* Open the new file */
+        file_open(full_path);
+        browser_free_entries();
+        mode_set(MODE_NORMAL);
+        ui_set_message("Opened: %s", full_path);
+        editor_refresh_full(); /* Full redraw the editor with new file */
+    }
+}
+
+static void browser_render(void)
+{
+    editor_buf_t eb = {NULL, 0};
+
+    /* Clear entire screen */
+    buf_append(&eb, "\x1b[?25l", 6); /* Hide cursor */
+    buf_append(&eb, "\x1b[2J", 4);   /* Clear entire screen */
+    buf_append(&eb, "\x1b[H", 3);    /* Move cursor home */
+
+    /* Title bar */
+    char title[256];
+    snprintf(title, sizeof(title), "=== File Browser: %s ===\r\n",
+             ec.mode_state.browser.current_dir);
+    buf_append(&eb, "\x1b[7m", 4); /* Inverse video */
+    buf_append(&eb, title, strlen(title));
+    buf_append(&eb, "\x1b[0m", 4); /* Reset */
+
+    /* Calculate visible entries */
+    int visible_lines = ec.screen_rows - 1; /* Subtract title line */
+
+    /* Adjust offset if needed */
+    if (ec.mode_state.browser.selected < ec.mode_state.browser.offset) {
+        ec.mode_state.browser.offset = ec.mode_state.browser.selected;
+    }
+    if (ec.mode_state.browser.selected >=
+        ec.mode_state.browser.offset + visible_lines) {
+        ec.mode_state.browser.offset =
+            ec.mode_state.browser.selected - visible_lines + 1;
+    }
+
+    /* Display entries */
+    int lines_printed = 0;
+    for (int i = 0; i < visible_lines && i + ec.mode_state.browser.offset <
+                                             ec.mode_state.browser.num_entries;
+         i++) {
+        int idx = i + ec.mode_state.browser.offset;
+        char *entry = ec.mode_state.browser.entries[idx];
+
+        /* Highlight selected entry */
+        if (idx == ec.mode_state.browser.selected)
+            buf_append(&eb, "\x1b[7m", 4); /* Inverse video */
+
+        /* Display entry with colored icon */
+        int color;
+        const char *type_str = get_file_type_info(entry, &color);
+
+        /* Add color for file type */
+        char color_buf[16];
+        snprintf(color_buf, sizeof(color_buf), "\x1b[%dm", color);
+        buf_append(&eb, color_buf, strlen(color_buf));
+
+        buf_append(&eb, "  ", 2);
+        buf_append(&eb, type_str, strlen(type_str));
+
+        /* Display name */
+        if (entry[0] == '/') {
+            /* Directory name without leading slash */
+            buf_append(&eb, entry + 1, strlen(entry + 1));
+        } else {
+            /* File name */
+            buf_append(&eb, entry, strlen(entry));
+        }
+
+        /* Reset color */
+        buf_append(&eb, "\x1b[0m", 4);
+
+        if (idx == ec.mode_state.browser.selected)
+            buf_append(&eb, "\x1b[0m", 4); /* Reset */
+
+        buf_append(&eb, "\x1b[K", 3); /* Clear to end of line */
+
+        lines_printed++;
+        /* Only add newline if not the last line before status */
+        if (lines_printed < visible_lines)
+            buf_append(&eb, "\r\n", 2);
+    }
+
+    /* Fill remaining lines */
+    for (int i = lines_printed; i < visible_lines; i++) {
+        if (i > lines_printed || lines_printed > 0)
+            buf_append(&eb, "\r\n", 2);
+        buf_append(&eb, "~\x1b[K", 4);
+    }
+
+    /* Always add final newline before status bar */
+    if (visible_lines > 0)
+        buf_append(&eb, "\r\n", 2);
+
+    /* Draw status bar similar to ui_draw_statusbar */
+    buf_append(&eb, "\x1b[100m", 6); /* Dark gray background */
+    char status[80], r_status[80];
+
+    /* Left side: mode and path */
+    int len = snprintf(status, sizeof(status), " [BROWSER] %s",
+                       ec.mode_state.browser.current_dir);
+
+    /* Right side: file count and time */
+#if ENABLE_TIMER
+    time_t now = time(NULL);
+    struct tm currtime_buf;
+    struct tm *currtime = localtime_r(&now, &currtime_buf);
+    int r_len = snprintf(
+        r_status, sizeof(r_status), "%d/%d files [ %2d:%2d:%2d ]",
+        ec.mode_state.browser.selected + 1, ec.mode_state.browser.num_entries,
+        currtime->tm_hour, currtime->tm_min, currtime->tm_sec);
+#else
+    int r_len = snprintf(r_status, sizeof(r_status), "%d/%d files",
+                         ec.mode_state.browser.selected + 1,
+                         ec.mode_state.browser.num_entries);
+#endif
+
+    if (len > ec.screen_cols)
+        len = ec.screen_cols;
+    buf_append(&eb, status, len);
+
+    while (len < ec.screen_cols) {
+        if (ec.screen_cols - len == r_len) {
+            buf_append(&eb, r_status, r_len);
+            break;
+        }
+        buf_append(&eb, " ", 1);
+        len++;
+    }
+    buf_append(&eb, "\x1b[m", 3); /* Reset */
+    buf_append(&eb, "\r\n", 2);   /* Move to message bar line */
+
+    /* Use ui_draw_messagebar for the bottom message bar */
+    ui_draw_messagebar(&eb);
+
+    write(STDOUT_FILENO, eb.buf, eb.len);
+    buf_destroy(&eb);
+}
+
 /* Clean up all allocated memory before exit */
 static void editor_cleanup(void)
 {
@@ -2613,6 +2951,7 @@ static void editor_cleanup(void)
     ec.mode_state.search.query = NULL;
     free(ec.mode_state.prompt.buffer);
     ec.mode_state.prompt.buffer = NULL;
+    browser_free_entries();
 }
 
 static void editor_process_key(void)
@@ -2622,6 +2961,68 @@ static void editor_process_key(void)
 
     /* Handle mode-specific keys first */
     switch (ec.mode) {
+    case MODE_BROWSER:
+        /* File browser mode */
+        switch (c) {
+        case '\x1b': /* ESC - cancel */
+        case CTRL_('q'):
+            browser_free_entries();
+            mode_set(MODE_NORMAL);
+            editor_refresh_full(); /* Full redraw the editor */
+            return;
+        case '\r': /* Enter - open file/directory */
+            browser_open_selected();
+            return;
+        case ARROW_UP:
+            if (ec.mode_state.browser.selected > 0) {
+                ec.mode_state.browser.selected--;
+            }
+            browser_render();
+            return;
+        case ARROW_DOWN:
+            if (ec.mode_state.browser.selected <
+                ec.mode_state.browser.num_entries - 1) {
+                ec.mode_state.browser.selected++;
+            }
+            browser_render();
+            return;
+        case PAGE_UP:
+            ec.mode_state.browser.selected -= ec.screen_rows - 3;
+            if (ec.mode_state.browser.selected < 0)
+                ec.mode_state.browser.selected = 0;
+            browser_render();
+            return;
+        case PAGE_DOWN:
+            ec.mode_state.browser.selected += ec.screen_rows - 3;
+            if (ec.mode_state.browser.selected >=
+                ec.mode_state.browser.num_entries)
+                ec.mode_state.browser.selected =
+                    ec.mode_state.browser.num_entries - 1;
+            browser_render();
+            return;
+        case HOME_KEY:
+            ec.mode_state.browser.selected = 0;
+            browser_render();
+            return;
+        case END_KEY:
+            ec.mode_state.browser.selected =
+                ec.mode_state.browser.num_entries - 1;
+            browser_render();
+            return;
+        case 'h':
+        case 'H':
+            /* Toggle hidden files */
+            ec.mode_state.browser.show_hidden =
+                !ec.mode_state.browser.show_hidden;
+            browser_load_directory(ec.mode_state.browser.current_dir);
+            browser_render();
+            return;
+        default:
+            /* Ignore other keys */
+            return;
+        }
+        break;
+
     case MODE_SELECT:
         switch (c) {
         case '\x1b': /* ESC - abort selection */
@@ -2681,12 +3082,6 @@ static void editor_process_key(void)
         case BACKSPACE:
             selection_delete();
             return;
-        case '\t': /* Tab to indent */
-            selection_indent();
-            return;
-        case CTRL_('u'): /* Ctrl-U to unindent */
-            selection_unindent();
-            return;
         default:
             /* Exit selection mode for other keys */
             mode_set(MODE_NORMAL);
@@ -2697,6 +3092,7 @@ static void editor_process_key(void)
     case MODE_HELP:
         /* Any key exits help mode */
         mode_restore();
+        editor_refresh_full(); /* Full redraw after exiting help */
         return;
 
     case MODE_SEARCH:
@@ -2868,6 +3264,12 @@ static void editor_process_key(void)
     case CTRL_('f'):
         search_find();
         break;
+    case CTRL_('o'): /* Open file browser */
+        mode_set(MODE_BROWSER);
+        browser_load_directory(".");
+        ui_set_message("File Browser: Enter to open, ESC to cancel");
+        browser_render();
+        return;      /* Don't continue to normal refresh */
     case CTRL_('?'): /* Show help */
         mode_set(MODE_HELP);
         /* Generate comprehensive help */
@@ -2952,7 +3354,7 @@ int main(int argc, char *argv[])
     while (1) {
 #if ENABLE_TIMER
         /* Check if timer needs refresh */
-        if (timer_check_update())
+        if (timer_check_update() && ec.mode != MODE_BROWSER)
             editor_refresh();
 
         /* Use poll for non-blocking keyboard input */
@@ -2965,12 +3367,14 @@ int main(int argc, char *argv[])
 
         if (ret > 0 && (fds[0].revents & POLLIN)) {
             editor_process_key();
-            editor_refresh();
+            if (ec.mode != MODE_BROWSER)
+                editor_refresh();
         }
 #else
         /* Simple blocking read when timer is disabled */
         editor_process_key();
-        editor_refresh();
+        if (ec.mode != MODE_BROWSER)
+            editor_refresh();
 #endif
     }
     /* not reachable */
