@@ -235,8 +235,8 @@ typedef struct {
     bool modified; /* Modified flag */
 } gap_buffer_t;
 
-#define GB_INITIAL_SIZE 65536 /* 64KB initial buffer */
-#define GB_GROW_SIZE 4096     /* 4KB growth increment */
+#define GAP_INITIAL_SIZE 65536 /* 64 KiB initial buffer */
+#define GAP_GROW_SIZE 4096     /* 4 KiB growth increment */
 
 /* Initialize a gap buffer with given size */
 static gap_buffer_t *gap_init(size_t initial_size)
@@ -312,7 +312,7 @@ static bool gap_grow(gap_buffer_t *gb, size_t min_gap)
 
     /* Calculate new size */
     size_t text_size = gap_length(gb);
-    size_t new_size = text_size + min_gap + GB_GROW_SIZE;
+    size_t new_size = text_size + min_gap + GAP_GROW_SIZE;
 
     /* Save current gap position */
     size_t gap_pos = gb->gap - gb->buffer;
@@ -897,6 +897,11 @@ static void mode_set(editor_mode_t new_mode)
     /* Mode-specific initialization */
     switch (new_mode) {
     case MODE_SELECT:
+        /* Ensure cursor is in valid position before starting selection */
+        if (ec.cursor_y >= ec.num_rows && ec.num_rows > 0) {
+            ec.cursor_y = ec.num_rows - 1;
+            ec.cursor_x = ec.row[ec.cursor_y].size;
+        }
         ec.selection.start_x = ec.cursor_x;
         ec.selection.start_y = ec.cursor_y;
         ec.selection.end_x = ec.cursor_x;
@@ -1434,6 +1439,27 @@ static void editor_paste(void)
     if (!ec.copied_char_buffer || !ec.gb)
         return;
 
+    /* Validate cursor position first */
+    if (ec.cursor_y >= ec.num_rows) {
+        if (ec.num_rows > 0) {
+            ec.cursor_y = ec.num_rows - 1;
+            ec.cursor_x = ec.row[ec.cursor_y].size;
+        } else {
+            ec.cursor_y = 0;
+            ec.cursor_x = 0;
+        }
+    }
+
+    /* Ensure cursor_x doesn't exceed current row size */
+    if (ec.cursor_y < ec.num_rows) {
+        int max_x = ec.row[ec.cursor_y].size;
+        if (ec.cursor_x > max_x)
+            ec.cursor_x = max_x;
+    }
+
+    /* Save validated cursor position for later */
+    int paste_start_x = ec.cursor_x, paste_start_y = ec.cursor_y;
+
     /* Calculate position in gap buffer */
     size_t pos = 0;
     for (int i = 0; i < ec.cursor_y && i < ec.num_rows; i++)
@@ -1442,46 +1468,57 @@ static void editor_paste(void)
 
     /* Insert the copied text */
     size_t paste_len = strlen(ec.copied_char_buffer);
+
     if (gap_insert_with_undo(ec.gb, ec.undo_stack, pos, ec.copied_char_buffer,
                              paste_len)) {
-        /* Check if pasted text contains newlines */
+        /* Sync gap buffer to rows first */
+        gap_sync_to_rows(ec.gb);
+
+        /* Now calculate correct cursor position based on what we pasted */
         bool has_newlines = (strchr(ec.copied_char_buffer, '\n') != NULL);
 
         if (has_newlines) {
-            /* Multi-line paste: sync gap buffer to rows */
-            gap_sync_to_rows(ec.gb);
-
-            /* Calculate new cursor position after multi-line paste */
-            int lines_added = 0;
+            /* For multi-line paste, find where we end up */
+            int lines_in_paste = 0;
             int last_line_len = 0;
+            int chars_on_first_line = paste_start_x;
+
             for (size_t i = 0; i < paste_len; i++) {
                 if (ec.copied_char_buffer[i] == '\n') {
-                    lines_added++;
+                    lines_in_paste++;
                     last_line_len = 0;
                 } else {
-                    last_line_len++;
+                    if (lines_in_paste == 0) {
+                        chars_on_first_line++;
+                    } else {
+                        last_line_len++;
+                    }
                 }
             }
 
-            /* Move cursor to end of pasted text */
-            if (lines_added > 0) {
-                ec.cursor_y += lines_added;
-                ec.cursor_x = last_line_len;
+            /* Position cursor at the end of pasted content */
+            ec.cursor_y = paste_start_y + lines_in_paste;
+            if (ec.cursor_y >= ec.num_rows)
+                ec.cursor_y = ec.num_rows - 1;
+
+            if (lines_in_paste == 0) {
+                /* No newlines actually found, stay on same line */
+                ec.cursor_x = chars_on_first_line;
             } else {
-                ec.cursor_x += paste_len;
+                /* Had newlines, cursor is at position on last line */
+                ec.cursor_x = last_line_len;
             }
+
+            /* Ensure cursor_x is valid */
+            if (ec.cursor_y < ec.num_rows &&
+                ec.cursor_x > ec.row[ec.cursor_y].size)
+                ec.cursor_x = ec.row[ec.cursor_y].size;
         } else {
-            /* Single-line paste: update row directly for efficiency */
-            if (ec.cursor_y == ec.num_rows)
-                row_insert(ec.num_rows, "", 0);
-            editor_row_t *row = &ec.row[ec.cursor_y];
-            row->chars = realloc(row->chars, row->size + paste_len + 1);
-            memmove(&row->chars[ec.cursor_x + paste_len],
-                    &row->chars[ec.cursor_x], row->size - ec.cursor_x + 1);
-            memcpy(&row->chars[ec.cursor_x], ec.copied_char_buffer, paste_len);
-            row->size += paste_len;
-            row_update(row);
-            ec.cursor_x += paste_len;
+            /* Single-line paste - advance cursor on same line */
+            ec.cursor_x = paste_start_x + paste_len;
+            if (ec.cursor_y < ec.num_rows &&
+                ec.cursor_x > ec.row[ec.cursor_y].size)
+                ec.cursor_x = ec.row[ec.cursor_y].size;
         }
 
         ec.modified = true;
@@ -1537,6 +1574,10 @@ static char *selection_get_text(void)
     int end_y = ec.selection.end_y;
     int end_x = ec.selection.end_x;
 
+    /* Ensure selection is within valid rows */
+    if (start_y >= ec.num_rows || end_y >= ec.num_rows)
+        return NULL;
+
     /* Normalize selection (ensure start comes before end) */
     if (start_y > end_y || (start_y == end_y && start_x > end_x)) {
         int tmp_y = start_y;
@@ -1551,22 +1592,41 @@ static char *selection_get_text(void)
     size_t total_size = 0;
     if (start_y == end_y) {
         /* Single line selection */
-        if (start_y < ec.num_rows && end_x > start_x)
-            total_size = end_x - start_x;
+        if (start_y < ec.num_rows) {
+            editor_row_t *row = &ec.row[start_y];
+            if (row->chars) { /* Safety check */
+                int actual_start = start_x > row->size ? row->size : start_x;
+                int actual_end = end_x > row->size ? row->size : end_x;
+                if (actual_end > actual_start)
+                    total_size = actual_end - actual_start;
+            }
+        }
     } else {
         /* Multi-line selection - properly count newlines */
         for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
+            editor_row_t *row = &ec.row[y];
+            if (!row->chars) {
+                /* Empty row, just count newline if not last line */
+                if (y < end_y)
+                    total_size++;
+                continue;
+            }
+
             if (y == start_y) {
                 /* First line: from start_x to end of line */
-                total_size += ec.row[y].size - start_x;
+                int actual_start = start_x > row->size ? row->size : start_x;
+                int len = row->size - actual_start;
+                if (len > 0)
+                    total_size += len;
                 if (y < end_y)
                     total_size++; /* Add newline if not last line */
             } else if (y == end_y) {
                 /* Last line: from beginning to end_x */
-                total_size += end_x;
+                int actual_end = end_x > row->size ? row->size : end_x;
+                total_size += actual_end;
             } else {
                 /* Middle lines: entire line */
-                total_size += ec.row[y].size;
+                total_size += row->size;
                 total_size++; /* Add newline */
             }
         }
@@ -1584,36 +1644,50 @@ static char *selection_get_text(void)
     if (start_y == end_y) {
         /* Single line */
         if (start_y < ec.num_rows) {
-            int len = end_x - start_x;
-            if (len > 0) {
-                memcpy(p, &ec.row[start_y].chars[start_x], len);
-                p += len;
+            editor_row_t *row = &ec.row[start_y];
+            if (row->chars) { /* Safety check */
+                /* Clamp positions to actual row size */
+                int actual_start = start_x > row->size ? row->size : start_x;
+                int actual_end = end_x > row->size ? row->size : end_x;
+                int len = actual_end - actual_start;
+                if (len > 0) {
+                    memcpy(p, &row->chars[actual_start], len);
+                    p += len;
+                }
             }
         }
     } else {
         /* Multi-line - properly include newlines */
         for (int y = start_y; y <= end_y && y < ec.num_rows; y++) {
             editor_row_t *row = &ec.row[y];
+            if (!row->chars)
+                continue; /* Safety check */
+
             if (y == start_y) {
-                /* First line: from start_x to end */
-                int len = row->size - start_x;
+                /* First line: from start_x to end of line */
+                int actual_start = start_x > row->size ? row->size : start_x;
+                int len = row->size - actual_start;
                 if (len > 0) {
-                    memcpy(p, &row->chars[start_x], len);
+                    memcpy(p, &row->chars[actual_start], len);
                     p += len;
                 }
+                /* Always add newline after first line if not the last line */
                 if (y < end_y) {
-                    *p++ = '\n'; /* Add newline after first line */
+                    *p++ = '\n';
                 }
             } else if (y == end_y) {
                 /* Last line: from beginning to end_x */
-                if (end_x > 0) {
-                    memcpy(p, row->chars, end_x);
-                    p += end_x;
+                int actual_end = end_x > row->size ? row->size : end_x;
+                if (actual_end > 0) {
+                    memcpy(p, row->chars, actual_end);
+                    p += actual_end;
                 }
             } else {
                 /* Middle lines: entire line with newline */
-                memcpy(p, row->chars, row->size);
-                p += row->size;
+                if (row->size > 0) {
+                    memcpy(p, row->chars, row->size);
+                    p += row->size;
+                }
                 *p++ = '\n'; /* Add newline after middle lines */
             }
         }
@@ -3087,6 +3161,11 @@ static void editor_process_key(void)
         case ARROW_RIGHT:
             /* Update selection while moving */
             editor_move_cursor(c);
+            /* Ensure selection doesn't go past last row */
+            if (ec.cursor_y >= ec.num_rows && ec.num_rows > 0) {
+                ec.cursor_y = ec.num_rows - 1;
+                ec.cursor_x = ec.row[ec.cursor_y].size;
+            }
             ec.selection.end_x = ec.cursor_x;
             ec.selection.end_y = ec.cursor_y;
             return;
@@ -3387,7 +3466,7 @@ static void editor_init(void)
     signal(SIGCONT, sig_cont_handler);
 
     /* Initialize gap buffer and undo/redo - always enabled */
-    ec.gb = gap_init(GB_INITIAL_SIZE);
+    ec.gb = gap_init(GAP_INITIAL_SIZE);
     if (ec.gb)
         ec.undo_stack = undo_init(MAX_UNDO_LEVELS);
 
