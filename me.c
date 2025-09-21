@@ -1369,7 +1369,7 @@ static void row_insert(int at, char *s, size_t line_len)
     ec.row[at].hl_open_comment = false;
     row_update(&ec.row[at]);
     ec.num_rows++;
-    ec.modified++;
+    ec.modified = true;
 }
 
 static void editor_copy(int cut)
