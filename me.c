@@ -267,7 +267,7 @@ static void gap_destroy(gap_buffer_t *gb)
 }
 
 /* Get total text length (excluding gap) */
-static inline size_t gap_length(gap_buffer_t *gb)
+static inline size_t gap_length(const gap_buffer_t *gb)
 {
     return (gb->gap - gb->buffer) + (gb->ebuffer - gb->egap);
 }
@@ -729,15 +729,8 @@ typedef union {
         int direction;
     } search;
     struct {
-        char *prompt_text;
-        void (*callback)(char *, int);
         char *buffer;
-        size_t buffer_size;
     } prompt;
-    struct {
-        const char *message;
-        bool choice; /* false = No, true = Yes */
-    } confirm;
     struct {
         char **entries;    /* Array of file/dir names */
         int num_entries;   /* Number of entries */
@@ -932,15 +925,15 @@ static void mode_restore(void)
 
 static const char *mode_get_name(editor_mode_t mode)
 {
-    /* Generate mode names using X-macro */
-    static const char *mode_names[] = {
+    if (mode >= 0 && mode < MODE_COUNT) {
+        /* Generate mode names using X-macro */
+        static const char *mode_names[] = {
 #define _(mode, name, desc) [MODE_##mode] = name,
-        EDITOR_MODES
+            EDITOR_MODES
 #undef _
-    };
-
-    if (mode >= 0 && mode < MODE_COUNT)
+        };
         return mode_names[mode];
+    }
     return "UNKNOWN";
 }
 
@@ -1349,7 +1342,7 @@ static void row_update(editor_row_t *row)
     syntax_highlight(row);
 }
 
-static void row_insert(int at, char *s, size_t line_len)
+static void row_insert(int at, const char *s, size_t line_len)
 {
     if ((at < 0) || (at > ec.num_rows))
         return;
@@ -1848,7 +1841,7 @@ static void gap_sync_to_rows(gap_buffer_t *gb)
         }
 
         /* Move past newline */
-        pos = line_end + (pos < len && gap_get_char(gb, line_end) == '\n');
+        pos = line_end + (gap_get_char(gb, line_end) == '\n');
     }
 
     /* Ensure at least one row */
@@ -2012,7 +2005,7 @@ static char *file_rows_to_string(int *buf_len)
     return buf;
 }
 
-static void file_open(char *file_name)
+static void file_open(const char *file_name)
 {
     /* Clear existing file content first */
     for (int i = 0; i < ec.num_rows; i++) {
@@ -2866,8 +2859,6 @@ static void browser_open_selected(void)
 
     if (entry[0] == '/') {
         /* Directory */
-        char new_path[PATH_MAX];
-
         if (!strcmp(entry, "/..")) {
             /* Go to parent directory */
             char *last_slash = strrchr(ec.mode_state.browser.current_dir, '/');
@@ -2879,6 +2870,7 @@ static void browser_open_selected(void)
             }
         } else {
             /* Enter subdirectory */
+            char new_path[PATH_MAX];
             snprintf(new_path, sizeof(new_path), "%s%s",
                      ec.mode_state.browser.current_dir, entry);
             browser_load_directory(new_path);
