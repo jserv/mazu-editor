@@ -12,6 +12,29 @@ source "$SCRIPT_DIR/common.sh"
 # Set test directory to script directory (override test-utils.sh)
 TEST_DIR="$SCRIPT_DIR"
 
+# Run a single test suite if it exists
+run_test_suite() {
+    local test_file="$1"
+    local test_name="$2"
+
+    if [ -f "$TEST_DIR/$test_file" ]; then
+        echo "=== $test_name ==="
+        "$TEST_DIR/$test_file"
+        echo
+    fi
+}
+
+# Define test suites with their display names
+declare -A TEST_SUITES=(
+    ["test-file_operations.sh"]="File Operations Tests"
+    ["test-copy_paste.sh"]="Copy/Paste Tests"
+    ["test-selection.sh"]="Selection Mode Tests"
+    ["test-undo_redo.sh"]="Undo/Redo Tests"
+    ["test-search.sh"]="Search Tests"
+    ["test-file_browser.sh"]="File Browser Tests"
+    ["test-line_numbers.sh"]="Line Numbers Tests"
+)
+
 echo "===== Mazu Editor Test Suite ====="
 echo
 
@@ -38,79 +61,50 @@ ALL_OUTPUT=$(mktemp)
 trap "rm -f $ALL_OUTPUT" EXIT
 
 {
-    # Basic file operations tests
-    if [ -f "$TEST_DIR/test-file_operations.sh" ]; then
-        echo "=== File Operations Tests ==="
-        bash "$TEST_DIR/test-file_operations.sh"
-        echo
-    fi
-
-    # Copy/paste tests
-    if [ -f "$TEST_DIR/test-copy_paste.sh" ]; then
-        echo "=== Copy/Paste Tests ==="
-        bash "$TEST_DIR/test-copy_paste.sh"
-        echo
-    fi
-
-    # Selection mode tests
-    if [ -f "$TEST_DIR/test-selection.sh" ]; then
-        echo "=== Selection Mode Tests ==="
-        bash "$TEST_DIR/test-selection.sh"
-        echo
-    fi
-
-    # Undo/redo tests
-    if [ -f "$TEST_DIR/test-undo_redo.sh" ]; then
-        echo "=== Undo/Redo Tests ==="
-        bash "$TEST_DIR/test-undo_redo.sh"
-        echo
-    fi
-
-    # Search functionality tests
-    if [ -f "$TEST_DIR/test-search.sh" ]; then
-        echo "=== Search Tests ==="
-        bash "$TEST_DIR/test-search.sh"
-        echo
-    fi
-
-    # File browser tests
-    if [ -f "$TEST_DIR/test-file_browser.sh" ]; then
-        echo "=== File Browser Tests ==="
-        bash "$TEST_DIR/test-file_browser.sh"
-        echo
-    fi
-
-    # Line numbers toggle tests
-    if [ -f "$TEST_DIR/test-line_numbers.sh" ]; then
-        echo "=== Line Numbers Tests ==="
-        bash "$TEST_DIR/test-line_numbers.sh"
-        echo
-    fi
+    # Run all test suites
+    for test_file in "test-file_operations.sh" "test-copy_paste.sh" "test-selection.sh" \
+                     "test-undo_redo.sh" "test-search.sh" "test-file_browser.sh" \
+                     "test-line_numbers.sh"; do
+        run_test_suite "$test_file" "${TEST_SUITES[$test_file]}"
+    done
 } | tee "$ALL_OUTPUT"
 
 # Cleanup
 cleanup_test_env
 
-# Count results from the actual output that was displayed
-TOTAL_TESTS=$(grep -c -E "✓|✗|⊘" "$ALL_OUTPUT" 2> /dev/null || echo 0)
-PASSED_TESTS=$(grep -c "✓" "$ALL_OUTPUT" 2> /dev/null || echo 0)
-FAILED_TESTS=$(grep -c "✗" "$ALL_OUTPUT" 2> /dev/null || echo 0)
+# Count test results from output
+count_test_results() {
+    local pattern="$1"
+    local count=$(grep -c "$pattern" "$ALL_OUTPUT" 2>/dev/null || echo 0)
+    echo "$count" | tr -d '\n'
+}
 
-# Clean up any newlines in variables
-TOTAL_TESTS=$(echo "$TOTAL_TESTS" | tr -d '\n')
-PASSED_TESTS=$(echo "$PASSED_TESTS" | tr -d '\n')
-FAILED_TESTS=$(echo "$FAILED_TESTS" | tr -d '\n')
+# Generate test summary report
+print_test_summary() {
+    local total="$1"
+    local passed="$2"
+    local failed="$3"
 
-echo
-echo "===== Test Summary ====="
-echo "Total tests: $TOTAL_TESTS"
+    echo
+    echo "===== Test Summary ====="
+    echo "Total tests: $total"
 
-if [ "$FAILED_TESTS" -eq 0 ]; then
-    echo -e "${GREEN}Passed: $PASSED_TESTS${NC}"
-    echo -e "${GREEN}All tests passed!${NC}"
-    exit 0
-else
-    echo -e "${GREEN}Passed: $PASSED_TESTS${NC}"
-    echo -e "${RED}Failed: $FAILED_TESTS${NC}"
-    exit 1
-fi
+    if [ "$failed" -eq 0 ]; then
+        echo -e "${GREEN}Passed: $passed${NC}"
+        echo -e "${GREEN}All tests passed!${NC}"
+        return 0
+    else
+        echo -e "${GREEN}Passed: $passed${NC}"
+        echo -e "${RED}Failed: $failed${NC}"
+        return 1
+    fi
+}
+
+# Count results
+TOTAL_TESTS=$(count_test_results "✓\|✗\|⊘")
+PASSED_TESTS=$(count_test_results "✓")
+FAILED_TESTS=$(count_test_results "✗")
+
+# Print summary and exit with appropriate code
+print_test_summary "$TOTAL_TESTS" "$PASSED_TESTS" "$FAILED_TESTS"
+exit $?

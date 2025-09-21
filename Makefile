@@ -8,7 +8,6 @@ me: me.c
 	$(CC) $(CFLAGS) -o $@ $<
 
 check: me
-	@echo "Running tests..."
 	@tests/runner.sh
 
 clean:
