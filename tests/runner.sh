@@ -19,7 +19,7 @@ echo
 check_editor_binary
 
 # Check for expect command
-if ! command -v expect &> /dev/null; then
+if ! command -v expect &>/dev/null; then
     echo -e "${YELLOW}Warning: 'expect' command not found${NC}"
     echo "Some interactive tests will be skipped"
     echo "Install with: brew install expect (macOS) or apt-get install expect (Linux)"
