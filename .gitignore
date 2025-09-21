@@ -1,17 +1,72 @@
+# Binary executable
 me
 
-# Snap packaging specific rules
-/*.snap
 # Build artifacts
-me.o
-me.dSYM/
+*.o
+*.a
+*.so
+*.dylib
+*.dSYM/
+
+# Debug files
+*.pdb
+debug_*.c
+core
+core.*
+vgcore.*
 
 # Test files
-test.txt
-test_file.txt
-debug_paste.c
+test*.txt
+*.test
+test_tmp/
+tests/test_tmp/
 
 # Temporary files
-expected-format
-test_valgrind.txt
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.*.swp
+.*.swo
+
+# Editor backups
+*.bak
+*.backup
+*.orig
+
+# Log files
 *.log
+*.out
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE files
+.vscode/
+.idea/
+*.sublime-*
+
+# Coverage files
+*.gcov
+*.gcda
+*.gcno
+coverage.info
+coverage/
+
+# Profiling files
+gmon.out
+*.prof
+
+# Package files
+*.snap
+*.deb
+*.rpm
+*.tar.gz
+*.zip
+
+# CI/build artifacts
+expected-format
+valgrind-*.txt
