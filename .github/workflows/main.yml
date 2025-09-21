@@ -1,0 +1,108 @@
+name: Build and Test
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  detect-code-related-file-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      has_code_related_changes: ${{ steps.set_has_code_related_changes.outputs.has_code_related_changes }}
+    steps:
+      - name: Check out the repo
+        uses: actions/checkout@v4
+      - name: Test changed files
+        id: changed-files
+        uses: tj-actions/changed-files@v46
+        with:
+          files: |
+              **/*.c
+              **/*.h
+              .clang-format
+              Makefile
+              tests/**
+              .ci/**
+      - name: Set has_code_related_changes
+        id: set_has_code_related_changes
+        run: |
+          if [[ ${{ steps.changed-files.outputs.any_changed }} == true ]]; then
+            echo "has_code_related_changes=true" >> $GITHUB_OUTPUT
+          else
+            echo "has_code_related_changes=false" >> $GITHUB_OUTPUT
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y build-essential expect
+    
+    - name: Build with ASan/UBSan
+      run: make CFLAGS+="-fsanitize=address,undefined -fno-omit-frame-pointer" LDFLAGS+="-fsanitize=address,undefined"
+    
+    - name: Run tests with sanitizers
+      env:
+        ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1
+        UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+      run: make check
+    
+    - name: Run headless tests
+      env:
+        TERM: xterm-256color
+      run: |
+        # Create a test file
+        echo "Test content" > test_file.txt
+        # Try to run the editor in batch mode with timeout
+        timeout 2s ./me test_file.txt < /dev/null || [ $? -eq 124 ]
+        rm -f test_file.txt
+
+  coding-style:
+    needs: [detect-code-related-file-changes]
+    if: needs.detect-code-related-file-changes.outputs.has_code_related_changes == 'true'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install format tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y clang-format file
+    
+    - name: Check code formatting
+      run: |
+        chmod +x .ci/check-format.sh
+        .ci/check-format.sh
+    
+    - name: Check newlines at EOF
+      run: |
+        chmod +x .ci/check-newline.sh
+        .ci/check-newline.sh
+
+  static-analysis:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install analysis tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y cppcheck clang-tools
+    
+    - name: Run cppcheck
+      run: |
+        cppcheck --enable=warning,style,performance,portability \
+                 --error-exitcode=1 \
+                 --suppress=missingIncludeSystem \
+                 --suppress=unusedFunction \
+                 me.c
+    
+    - name: Run clang static analyzer
+      run: |
+        scan-build --status-bugs make clean all
