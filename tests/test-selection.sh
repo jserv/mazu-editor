@@ -6,7 +6,7 @@ source "$(dirname "$0")/common.sh"
 
 # Test 1: Enter and exit selection mode
 test_selection_mode_toggle() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Selection mode toggle (skipped - expect not installed)" "PASS"
         return
     fi
@@ -23,7 +23,7 @@ test_selection_mode_toggle() {
         send \"\033\"      ;# ESC to exit selection mode
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     if [ $? -eq 0 ]; then
         report_test "Selection mode toggle" "PASS"
@@ -36,7 +36,7 @@ test_selection_mode_toggle() {
 
 # Test 2: Selection with arrow keys
 test_selection_arrow_keys() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Selection with arrows (skipped - expect not installed)" "PASS"
         return
     fi
@@ -58,7 +58,7 @@ And this line too"
         send \"\x03\"      ;# Ctrl-C to copy
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     if [ $? -eq 0 ]; then
         report_test "Selection with arrows" "PASS"
@@ -71,7 +71,7 @@ And this line too"
 
 # Test 3: Selection with Home/End keys
 test_selection_home_end() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Selection Home/End (skipped - expect not installed)" "PASS"
         return
     fi
@@ -89,7 +89,7 @@ test_selection_home_end() {
         send \"\x03\"      ;# Ctrl-C to copy
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     if [ $? -eq 0 ]; then
         report_test "Selection Home/End" "PASS"
@@ -102,7 +102,7 @@ test_selection_home_end() {
 
 # Test 4: Cancel selection with ESC
 test_cancel_selection() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Cancel selection (skipped - expect not installed)" "PASS"
         return
     fi
@@ -121,7 +121,7 @@ test_cancel_selection() {
         send \"\033\"      ;# ESC to cancel
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     if [ $? -eq 0 ]; then
         report_test "Cancel selection" "PASS"

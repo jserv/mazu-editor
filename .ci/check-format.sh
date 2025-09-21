@@ -10,13 +10,13 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 C_SOURCES=$(find "${REPO_ROOT}" -name "*.c" -o -name "*.h" | grep -v "tests/test-features.c")
 for file in ${C_SOURCES}; do
-    clang-format ${file} >expected-format
+    clang-format ${file} > expected-format
     diff -u -p --label="${file}" --label="expected coding style" ${file} expected-format
 done
 C_MISMATCH_LINE_CNT=$(clang-format --output-replacements-xml ${C_SOURCES} | egrep "</replacement>" | wc -l | tr -d ' ')
 
 SH_SOURCES=$(find "${REPO_ROOT}" -name "*.sh")
-if command -v shfmt &>/dev/null; then
+if command -v shfmt &> /dev/null; then
     for file in ${SH_SOURCES}; do
         shfmt -d "${file}"
     done

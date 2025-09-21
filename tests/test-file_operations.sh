@@ -10,7 +10,7 @@ test_create_new_file() {
     local content="Hello World"
 
     # Create file using echo and editor (simulated)
-    echo "$content" >"$test_file"
+    echo "$content" > "$test_file"
 
     if [ -f "$test_file" ] && [ "$(cat "$test_file")" = "$content" ]; then
         report_test "Create new file" "PASS"
@@ -48,7 +48,7 @@ Line 3"
 
 # Test 3: Save modifications
 test_save_modifications() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Save modifications (skipped - expect not installed)" "PASS"
         return
     fi
@@ -67,7 +67,7 @@ test_save_modifications() {
         send \"\x17\"  ;# Ctrl-Q to quit
         send \"n\"     ;# Don't save
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     # Check if file remains unchanged when not saved
     if [ "$(cat "$test_file")" = "$original" ]; then
@@ -104,11 +104,11 @@ test_handle_large_file() {
 
     # Create a file with 1000 lines
     for i in {1..1000}; do
-        echo "Line $i: This is a test line with some content to make it realistic" >>"$test_file"
+        echo "Line $i: This is a test line with some content to make it realistic" >> "$test_file"
     done
 
     # Check if large file was created successfully
-    local line_count=$(wc -l <"$test_file")
+    local line_count=$(wc -l < "$test_file")
 
     if [ "$line_count" -eq 1000 ] && [ -s "$test_file" ]; then
         report_test "Handle large file (1000 lines)" "PASS"

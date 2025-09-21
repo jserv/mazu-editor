@@ -6,7 +6,7 @@ source "$(dirname "$0")/common.sh"
 
 # Test 1: Basic undo
 test_basic_undo() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Basic undo (skipped - expect not installed)" "PASS"
         return
     fi
@@ -26,7 +26,7 @@ test_basic_undo() {
         send \"\x13\"      ;# Ctrl-S to save
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     # Check if undo worked
     local content=$(cat "$test_file")
@@ -48,7 +48,7 @@ test_basic_redo() {
 
 # Test 3: Multiple undo operations
 test_multiple_undo() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Multiple undo (skipped - expect not installed)" "PASS"
         return
     fi
@@ -71,7 +71,7 @@ test_multiple_undo() {
         send \"\x13\"      ;# Ctrl-S to save
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     # Should be back to original
     local content=$(cat "$test_file")
@@ -86,7 +86,7 @@ test_multiple_undo() {
 
 # Test 4: Undo after cut/paste
 test_undo_cut_paste() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Undo cut/paste (skipped - expect not installed)" "PASS"
         return
     fi
@@ -112,10 +112,10 @@ Line 3"
         send \"\x13\"      ;# Ctrl-S to save
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     # Should be back to original
-    local lines=$(wc -l <"$test_file")
+    local lines=$(wc -l < "$test_file")
     if [ "$lines" -eq 3 ]; then
         report_test "Undo cut/paste" "PASS"
     else

@@ -20,7 +20,7 @@ test_multiline_copy_paste() {
 
 # Test 3: Cut and paste
 test_cut_paste() {
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         report_test "Cut and paste (skipped - expect not installed)" "PASS"
         return
     fi
@@ -47,7 +47,7 @@ Another line"
         send \"\x13\"      ;# Ctrl-S to save
         send \"\x11\"      ;# Ctrl-Q to quit
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 
     # File should still have content (cut and pasted)
     if [ -s "$test_file" ]; then

@@ -778,7 +778,7 @@ struct {
     .row = NULL,
     .modified = false,
     .file_name = NULL,
-    .status_msg[0] = '\0',
+    .status_msg = "",
     .status_msg_time = 0,
     .copied_char_buffer = NULL,
     .syntax = NULL,
@@ -786,8 +786,15 @@ struct {
     .undo_stack = NULL,
     .mode = MODE_NORMAL,
     .prev_mode = MODE_NORMAL,
-    .mode_state = {0},
-    .selection = {0, 0, 0, 0, false},
+    .mode_state = {{0}},
+    .selection =
+        {
+            .start_x = 0,
+            .start_y = 0,
+            .end_x = 0,
+            .end_y = 0,
+            .active = false,
+        },
     .show_line_numbers = false,
 #if ENABLE_TIMER
     .last_update_time = 0,
@@ -2271,9 +2278,8 @@ static void ui_draw_statusbar(editor_buf_t *eb)
     int len = snprintf(status, sizeof(status), " [%s] File: %.20s %s",
                        mode_name, ec.file_name ? ec.file_name : "< New >",
                        ec.modified ? "(modified)" : "");
-    int col_size = ec.row &&ec.cursor_y <= ec.num_rows - 1
-                       ? col_size = ec.row[ec.cursor_y].size
-                       : 0;
+    int col_size =
+        ec.row && ec.cursor_y <= ec.num_rows - 1 ? ec.row[ec.cursor_y].size : 0;
 
 #if ENABLE_TIMER
     /* Display time when timer is enabled */

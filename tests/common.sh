@@ -4,7 +4,7 @@
 
 # Set up color configuration
 set_colors() {
-    if [ -t 1 ] && [ -n "$(tput colors 2>/dev/null)" ] && [ "$(tput colors)" -ge 8 ]; then
+    if [ -t 1 ] && [ -n "$(tput colors 2> /dev/null)" ] && [ "$(tput colors)" -ge 8 ]; then
         RED='\033[0;31m'
         GREEN='\033[0;32m'
         YELLOW='\033[1;33m'
@@ -95,7 +95,7 @@ print_summary() {
 create_test_file() {
     local filename="$1"
     local content="$2"
-    printf "%s\n" "$content" >"$filename" || throw "Failed to create test file: $filename"
+    printf "%s\n" "$content" > "$filename" || throw "Failed to create test file: $filename"
 }
 
 # Check if editor binary exists
@@ -111,7 +111,7 @@ send_keys_to_editor() {
     local keys="$2"
     local timeout="${3:-2}"
 
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         return 1
     fi
 
@@ -121,7 +121,7 @@ send_keys_to_editor() {
         expect -re {.*}
         send \"$keys\"
         expect eof
-    " >/dev/null 2>&1
+    " > /dev/null 2>&1
 }
 
 # Compare two files
@@ -132,14 +132,14 @@ compare_files() {
     [ ! -f "$file1" ] && throw "File not found: $file1"
     [ ! -f "$file2" ] && throw "File not found: $file2"
 
-    diff -q "$file1" "$file2" >/dev/null 2>&1
+    diff -q "$file1" "$file2" > /dev/null 2>&1
 }
 
 # Verify test prerequisites
 verify_prerequisites() {
     check_editor_binary
 
-    if ! command -v expect &>/dev/null; then
+    if ! command -v expect &> /dev/null; then
         printf "${YELLOW}Warning: 'expect' command not found${NC}\n"
         printf "Some interactive tests will be skipped\n"
         printf "Install with: brew install expect (macOS) or apt-get install expect (Linux)\n\n"

@@ -38,21 +38,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install dependencies
       run: |
         sudo apt-get update
         sudo apt-get install -y build-essential expect
-    
+
     - name: Build with ASan/UBSan
       run: make CFLAGS+="-fsanitize=address,undefined -fno-omit-frame-pointer" LDFLAGS+="-fsanitize=address,undefined"
-    
+
     - name: Run tests with sanitizers
       env:
         ASAN_OPTIONS: detect_leaks=1:strict_string_checks=1:detect_stack_use_after_return=1
         UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
       run: make check
-    
+
     - name: Run headless tests
       env:
         TERM: xterm-256color
@@ -70,40 +70,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install format tools
       run: |
         sudo apt-get update
         sudo apt-get install -y clang-format file
-    
+
     - name: Check code formatting
       run: |
-        chmod +x .ci/check-format.sh
         .ci/check-format.sh
-    
+
     - name: Check newlines at EOF
       run: |
-        chmod +x .ci/check-newline.sh
         .ci/check-newline.sh
 
   static-analysis:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@v4
-    
+
     - name: Install analysis tools
       run: |
         sudo apt-get update
         sudo apt-get install -y cppcheck clang-tools
-    
+
     - name: Run cppcheck
       run: |
-        cppcheck --enable=warning,style,performance,portability \
-                 --error-exitcode=1 \
-                 --suppress=missingIncludeSystem \
-                 --suppress=unusedFunction \
-                 me.c
-    
+        .ci/static-analysis.sh
+
     - name: Run clang static analyzer
       run: |
         scan-build --status-bugs make clean all

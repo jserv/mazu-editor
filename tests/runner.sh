@@ -19,7 +19,7 @@ echo
 check_editor_binary
 
 # Check for expect command
-if ! command -v expect &>/dev/null; then
+if ! command -v expect &> /dev/null; then
     echo -e "${YELLOW}Warning: 'expect' command not found${NC}"
     echo "Some interactive tests will be skipped"
     echo "Install with: brew install expect (macOS) or apt-get install expect (Linux)"
@@ -92,9 +92,9 @@ trap "rm -f $ALL_OUTPUT" EXIT
 cleanup_test_env
 
 # Count results from the actual output that was displayed
-TOTAL_TESTS=$(grep -c -E "✓|✗|⊘" "$ALL_OUTPUT" 2>/dev/null || echo 0)
-PASSED_TESTS=$(grep -c "✓" "$ALL_OUTPUT" 2>/dev/null || echo 0)
-FAILED_TESTS=$(grep -c "✗" "$ALL_OUTPUT" 2>/dev/null || echo 0)
+TOTAL_TESTS=$(grep -c -E "✓|✗|⊘" "$ALL_OUTPUT" 2> /dev/null || echo 0)
+PASSED_TESTS=$(grep -c "✓" "$ALL_OUTPUT" 2> /dev/null || echo 0)
+FAILED_TESTS=$(grep -c "✗" "$ALL_OUTPUT" 2> /dev/null || echo 0)
 
 # Clean up any newlines in variables
 TOTAL_TESTS=$(echo "$TOTAL_TESTS" | tr -d '\n')
