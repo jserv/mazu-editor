@@ -293,9 +293,9 @@ static void gap_move(gap_buffer_t *gb, size_t pos)
         gb->egap -= len;
         gb->gap -= len;
         memmove(gb->egap, gb->gap, len);
-    } else if (dest > gb->gap) {
+    } else if (dest > gb->egap) {
         /* Move gap forward - shift text backward */
-        size_t len = dest - gb->gap;
+        size_t len = dest - gb->egap;
         memmove(gb->gap, gb->egap, len);
         gb->gap += len;
         gb->egap += len;

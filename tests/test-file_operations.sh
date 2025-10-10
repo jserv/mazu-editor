@@ -64,7 +64,7 @@ test_save_modifications() {
         set timeout 2
         spawn $EDITOR_BIN $test_file
         expect -re {.*}
-        send \"\x17\"  ;# Ctrl-Q to quit
+        send \"\x11\"  ;# Ctrl-Q to quit
         send \"n\"     ;# Don't save
         expect eof
     " > /dev/null 2>&1
@@ -79,7 +79,146 @@ test_save_modifications() {
     rm -f "$test_file"
 }
 
-# Test 4: Handle non-existent file
+# Test 4: Save without changes
+test_save_without_changes() {
+    if ! command -v expect &> /dev/null; then
+        report_test "Save without changes (skipped - expect not installed)" "PASS"
+        return
+    fi
+
+    local test_file="test.txt"
+    local original="base"
+    create_test_file "$test_file" "$original"
+
+    expect -c "
+        set timeout 2
+        spawn $EDITOR_BIN $test_file
+        expect -re {.*}
+        send \"\x13\"      ;# Ctrl-S (Save)
+        send \"\x11\"      ;# Ctrl-Q (Quit)
+        expect eof
+    " > /dev/null 2>&1
+
+    # Check if file successfully saved
+    if [ "$(cat "$test_file")" = "$original" ]; then
+        report_test "Save without changes" "PASS"
+    else
+        report_test "Save without changes" "FAIL"
+    fi
+
+    rm -f "$test_file"
+}
+
+# Test 5: insert character
+test_insert_character() {
+    if ! command -v expect &> /dev/null; then
+        report_test "Insert character (skipped - expect not installed)" "PASS"
+        return
+    fi
+
+    local test_file="insert.txt"
+    local expected="hello"
+    create_test_file "$test_file" "" # start empty
+
+    expect -c "
+        set timeout 2
+        spawn $EDITOR_BIN $test_file
+        after 100
+        send -- \"hello\"
+        send \"\x13\"      ;# Ctrl-S
+        send \"\x11\"      ;# Ctrl-Q
+        expect eof
+    " > /dev/null 2>&1
+
+    if [ "$(cat "$test_file")" = "$expected" ]; then
+        report_test "Insert character" "PASS"
+    else
+        report_test "Insert character" "FAIL"
+    fi
+
+    rm -f "$test_file"
+}
+
+# Test 6: delete character
+test_delete_character() {
+    if ! command -v expect &> /dev/null; then
+        report_test "Delete character(skipped - expect not installed)" "PASS"
+        return
+    fi
+
+    local test_file="del.txt"
+    local original="hi"
+    local expected="h"
+    create_test_file "$test_file" "$original"
+
+    expect -c "
+        set timeout 2
+        spawn $EDITOR_BIN $test_file
+        after 100
+        send \"\033\[C\"   ;# Right
+        send \"\033\[C\"
+        send \"\x7f\"      ;# Backspace (DEL)
+        send \"\x13\"
+        send \"\x11\"
+        expect eof
+    " > /dev/null 2>&1
+
+    if [ "$(cat "$test_file")" = "$expected" ]; then
+        report_test "Delete character" "PASS"
+    else
+        report_test "Delete character" "FAIL"
+    fi
+
+    rm -f "$test_file"
+}
+
+# Test 7: interleaved navagation and insertion
+test_interleaved_nav_ins() {
+    if ! command -v expect &> /dev/null; then
+        report_test "Interleaved navigation and insertion 
+        (skipped - expect not installed)" "PASS"
+        return
+    fi
+
+    local test_file="ins_move.txt"
+    local expected="!!test!!"
+    create_test_file "$test_file" ""
+
+    expect -c "
+        set timeout 2
+        spawn $EDITOR_BIN $test_file
+        after 100
+        send -- \"e\"
+        send \"\033\[D\"
+        send -- \"t\"
+        send \"\033\[C\"	
+        send -- \"st\"
+        send \"\033\[D\"
+        send \"\033\[D\"
+        send \"\033\[D\"
+        send \"\033\[D\"
+        send -- \"!!\"	
+        send \"\033\[C\"
+        send \"\033\[C\"	
+        send \"\033\[C\"	
+        send \"\033\[C\"	
+        send -- \"!!\"	
+        send \"\x13\"
+        send \"\x11\"
+        expect eof
+    " > /dev/null 2>&1
+
+    # Check if segmentation fault happened while insert
+    if [ "$(cat "$test_file")" = "$expected" ]; then
+        report_test "Interleaved navigation and insertion" "PASS"
+    else
+        report_test "Interleaved navigation and insertion" "FAIL"
+    fi
+
+    rm -f "$test_file"
+}
+
+# Test 8: Handle non-existent file
 test_handle_nonexistent_file() {
     local test_file="nonexistent_$(date +%s).txt"
 
@@ -98,7 +237,7 @@ test_handle_nonexistent_file() {
     rm -f "$test_file"
 }
 
-# Test 5: Handle large file
+# Test 9: Handle large file
 test_handle_large_file() {
     local test_file="large.txt"
 
@@ -123,5 +262,9 @@ test_handle_large_file() {
 test_create_new_file
 test_open_existing_file
 test_save_modifications
+test_save_without_changes
+test_insert_character
+test_delete_character
+test_interleaved_nav_ins
 test_handle_nonexistent_file
 test_handle_large_file
