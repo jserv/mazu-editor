@@ -130,6 +130,69 @@ static inline const char *utf8_prev_char(const char *start, const char *s)
     return s;
 }
 
+/* Add leading zero to the start of the file name */
+static char *temp_name(const char *s)
+{
+    /* Creating a temporary file name by adding a leading period
+    to the start of the file name; in addition to the file
+    name, to accept absolute and relative paths, simply adding
+    a period at the beginning of the string won't work; it should
+    be added at the beginning of the file name, not the whole path  */
+
+    /* Separate the path of the file and it's name */
+    int len = strlen(s);
+    /* Both file_name and file_path couldn't be longer than the length of the
+     * former string */
+    char *file_name = malloc(len);
+    char *file_path = malloc(len);
+    char *temporary_file_name =
+        malloc(len + 1 +
+               1);  // (at most) +1 for leading period && +1 for null-terminator
+
+    int index = -1;
+
+    /* Loop through file path to check if there is any '/' character */
+    for (size_t i = 0; i < len; ++i) {
+        if (s[i] == '/') {
+            index = i;
+        }
+    }
+
+    /* If there is any '/', copy everything after the last 'slash' into
+    file_name and everything before (including last 'slash') into file_path*/
+    if (index != -1) {
+        memcpy(file_name, s + index + 1, (len - index));
+        memcpy(file_path, s, index + 1);
+    }
+    /*If there isn't any '/', copy the everything into file_name
+    and set file_path to "./" (indicating that this file will be in
+    the current directory)*/
+    else {
+        memcpy(file_name, s, len);
+        memcpy(file_path, "./", 3);
+    }
+
+    int file_name_len = strlen(file_name);
+    int file_path_len = strlen(file_path);
+
+    /* Concatenate file_path + '.' + file_name together */
+
+    memcpy(temporary_file_name, file_path, file_path_len + 1);
+    memcpy(temporary_file_name + file_path_len, ".", 2);
+    memcpy(temporary_file_name + file_path_len + 1, file_name,
+           file_name_len + 1);
+
+    /* Free file_name */
+    free(file_name);
+    file_name = NULL;
+
+    /* Free file_path */
+    free(file_path);
+    file_path = NULL;
+
+    return temporary_file_name;
+}
+
 /* Forward declaration needed early for debugging */
 static void ui_set_message(const char *msg, ...);
 
@@ -749,7 +812,9 @@ struct {
     int num_rows;
     editor_row_t *row;
     bool modified;
+    bool file_exists;
     char *file_name;
+    char *temp_file_name;
     char status_msg[90];
     time_t status_msg_time;
     char *copied_char_buffer;
@@ -777,7 +842,9 @@ struct {
     .num_rows = 0,
     .row = NULL,
     .modified = false,
+    .file_exists = 0,
     .file_name = NULL,
+    .temp_file_name = NULL,
     .status_msg = "",
     .status_msg_time = 0,
     .copied_char_buffer = NULL,
@@ -2034,9 +2101,36 @@ static void file_open(const char *file_name)
     free(ec.file_name);
     ec.file_name = strdup(file_name);
     syntax_select();
-    FILE *file = fopen(file_name, "r+");
-    if (!file)
-        panic("Failed to open the file");
+    /* Try to open existing file; if it does not exist, create a temporary file
+     */
+    struct stat st;
+    FILE *file;
+    if (stat(file_name, &st) == 0) {
+        /* File exists, open normally */
+        file = fopen(file_name, "r+");
+        if (file == NULL) {
+            panic("Failed to open file");
+        }
+        ec.file_exists = true;
+    } else if (errno == ENOENT) {
+        /* File doesn't exist, set file_exists to false,
+        create temporary file until user decides to save
+        that file */
+        char *temp_file_name = temp_name(file_name);
+        if (temp_file_name == NULL) {
+            panic("Failed to create temp file");
+        }
+        ec.temp_file_name = temp_file_name;
+
+        /* Create temporary file */
+        file = fopen(temp_file_name, "w+");
+        if (file == NULL) {
+            panic("Failed to open file");
+        }
+        ec.file_exists = false;
+    } else {
+        panic("Failed to open file");
+    }
 
     /* Load file into gap buffer if available */
     if (ec.gb) {
@@ -2073,13 +2167,21 @@ static void file_open(const char *file_name)
 
 static void file_save(void)
 {
-    if (!ec.file_name) {
+    /* File does not exist and there is also no file name */
+    if (!ec.file_exists && !ec.file_name) {
         ec.file_name = ui_prompt("Save as: %s (ESC to cancel)", NULL);
         if (!ec.file_name) {
             ui_set_message("Save aborted");
             return;
         }
         syntax_select();
+    }
+    /* File does not exist but there is a name for it*/
+    else if (!ec.file_exists && ec.file_name) {
+        /* Remove the leading period from the temporary file */
+        if (rename(ec.temp_file_name, ec.file_name) == -1) {
+            panic("Failed to save the file");
+        }
     }
     int len;
     char *buf = file_rows_to_string(&len);
@@ -3055,6 +3157,10 @@ static void editor_cleanup(void)
     free(ec.file_name);
     ec.file_name = NULL;
 
+    /* Free temporary file name */
+    free(ec.temp_file_name);
+    ec.temp_file_name = NULL;
+
     /* Free copied buffer */
     free(ec.copied_char_buffer);
     ec.copied_char_buffer = NULL;
@@ -3247,6 +3353,14 @@ static void editor_process_key(void)
         if (ec.modified) {
             if (!ui_confirm("File has been modified. Quit without saving?"))
                 return;
+        }
+        /* If the temporary file exists and user decides to quit editor without
+         * saving it */
+        struct stat st;
+        if (stat(ec.temp_file_name, &st) == 0) {
+            if (remove(ec.temp_file_name) == -1) {
+                panic("Failed to delete temp file");
+            }
         }
         term_clear();
         term_close_buffer();
@@ -3479,7 +3593,7 @@ static void editor_init(void)
 int main(int argc, char *argv[])
 {
     editor_init();
-    if (argc >= 2)
+    if (argc > 1)
         file_open(argv[1]);
     term_enable_raw();
     ui_set_message("Mazu Editor | Ctrl-? Help");
